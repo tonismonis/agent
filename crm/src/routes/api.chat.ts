@@ -9,7 +9,7 @@ import { openRouterText } from '@tanstack/ai-openrouter'
 import { createFileRoute } from '@tanstack/react-router'
 
 import { chatTools } from '#/lib/chat-tools'
-import { APP_PROMPT } from '#/lib/system-prompt'
+import { buildAppPrompt } from '#/lib/system-prompt'
 
 export const Route = createFileRoute('/api/chat')({
   server: {
@@ -26,7 +26,7 @@ export const Route = createFileRoute('/api/chat')({
           'anthropic/claude-haiku-4-5') as Parameters<typeof openRouterText>[0]
         const stream = chat({
           adapter: openRouterText(model),
-          systemPrompts: [APP_PROMPT, systemPrompt],
+          systemPrompts: [buildAppPrompt(), systemPrompt],
           tools: [tool],
           agentLoopStrategy: maxIterations(5),
           messages,

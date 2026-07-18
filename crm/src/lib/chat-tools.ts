@@ -1,13 +1,21 @@
 import { toolDefinition } from '@tanstack/ai'
 
 import {
+  createAppointment,
   createClient,
+  createPayment,
   createService,
+  findAppointments,
   findClients,
+  findPayments,
   findServices,
+  softDeleteAppointment,
   softDeleteClient,
+  softDeletePayment,
   softDeleteService,
+  updateAppointment,
   updateClient,
+  updatePayment,
   updateService,
 } from '#/lib/tools'
 
@@ -59,6 +67,54 @@ export const softDeleteServiceTool = toolDefinition({
   inputSchema: softDeleteService.inputSchema,
 }).server((input) => softDeleteService.execute(input))
 
+export const createAppointmentTool = toolDefinition({
+  name: createAppointment.name,
+  description: createAppointment.description,
+  inputSchema: createAppointment.inputSchema,
+}).server((input) => createAppointment.execute(input))
+
+export const findAppointmentsTool = toolDefinition({
+  name: findAppointments.name,
+  description: findAppointments.description,
+  inputSchema: findAppointments.inputSchema,
+}).server((input) => findAppointments.execute(input))
+
+export const updateAppointmentTool = toolDefinition({
+  name: updateAppointment.name,
+  description: updateAppointment.description,
+  inputSchema: updateAppointment.inputSchema,
+}).server((input) => updateAppointment.execute(input))
+
+export const softDeleteAppointmentTool = toolDefinition({
+  name: softDeleteAppointment.name,
+  description: softDeleteAppointment.description,
+  inputSchema: softDeleteAppointment.inputSchema,
+}).server((input) => softDeleteAppointment.execute(input))
+
+export const createPaymentTool = toolDefinition({
+  name: createPayment.name,
+  description: createPayment.description,
+  inputSchema: createPayment.inputSchema,
+}).server((input) => createPayment.execute(input))
+
+export const findPaymentsTool = toolDefinition({
+  name: findPayments.name,
+  description: findPayments.description,
+  inputSchema: findPayments.inputSchema,
+}).server((input) => findPayments.execute(input))
+
+export const updatePaymentTool = toolDefinition({
+  name: updatePayment.name,
+  description: updatePayment.description,
+  inputSchema: updatePayment.inputSchema,
+}).server((input) => updatePayment.execute(input))
+
+export const softDeletePaymentTool = toolDefinition({
+  name: softDeletePayment.name,
+  description: softDeletePayment.description,
+  inputSchema: softDeletePayment.inputSchema,
+}).server((input) => softDeletePayment.execute(input))
+
 export const chatTools = [
   createClientTool,
   findClientsTool,
@@ -68,4 +124,12 @@ export const chatTools = [
   findServicesTool,
   updateServiceTool,
   softDeleteServiceTool,
+  createAppointmentTool,
+  findAppointmentsTool,
+  updateAppointmentTool,
+  softDeleteAppointmentTool,
+  createPaymentTool,
+  findPaymentsTool,
+  updatePaymentTool,
+  softDeletePaymentTool,
 ]
