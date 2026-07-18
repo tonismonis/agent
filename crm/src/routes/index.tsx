@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 import type { UIMessage } from '@tanstack/ai-react'
 
@@ -60,9 +60,17 @@ function InstrumentationCall({
   part: ToolCallPart
   events: Array<CodeModeEvent>
 }) {
+  const detailsInitialized = useRef(false)
+
   return (
     <section className="border border-zinc-800 bg-zinc-950">
-      <details open={part.state !== 'output-available'}>
+      <details
+        ref={(details) => {
+          if (!details || detailsInitialized.current) return
+          details.open = part.state !== 'complete'
+          detailsInitialized.current = true
+        }}
+      >
         <summary className="cursor-pointer px-3 py-2 font-mono text-xs text-zinc-300">
           {part.name} · {part.state}
         </summary>
@@ -95,7 +103,36 @@ function Home() {
     Map<string, Array<CodeModeEvent>>
   >(new Map())
   const eventId = useRef(0)
+  const messageScroll = useRef<HTMLDivElement>(null)
   const messageEnd = useRef<HTMLDivElement>(null)
+  const instrumentationScroll = useRef<HTMLElement>(null)
+  const instrumentationEnd = useRef<HTMLDivElement>(null)
+
+  const scrollIfPinned = useCallback(
+    (
+      container: HTMLElement | null,
+      anchor: HTMLDivElement | null,
+    ) => {
+      if (
+        !container ||
+        container.scrollHeight - container.scrollTop - container.clientHeight >=
+          40
+      ) {
+        return
+      }
+
+      requestAnimationFrame(() => anchor?.scrollIntoView({ block: 'end' }))
+    },
+    [],
+  )
+
+  const scrollMessages = useCallback(() => {
+    scrollIfPinned(messageScroll.current, messageEnd.current)
+  }, [scrollIfPinned])
+
+  const scrollInstrumentation = useCallback(() => {
+    scrollIfPinned(instrumentationScroll.current, instrumentationEnd.current)
+  }, [scrollIfPinned])
 
   const onCustomEvent = useCallback(
     (type: string, data: unknown, context: { toolCallId?: string }) => {
@@ -110,23 +147,23 @@ function Home() {
         ])
         return next
       })
+      scrollInstrumentation()
     },
-    [],
+    [scrollInstrumentation],
   )
 
   const { messages, sendMessage, isLoading, error, status } = useChat({
     connection: fetchServerSentEvents('/api/chat'),
+    onChunk: (chunk) => {
+      if (chunk.type === 'TEXT_MESSAGE_CONTENT') scrollMessages()
+      if (chunk.type.startsWith('TOOL_CALL_')) scrollInstrumentation()
+    },
     onCustomEvent,
   })
 
-  useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
   const toolCalls = messages.flatMap((message) =>
     message.parts.filter(
-      (part): part is ToolCallPart =>
-        part.type === 'tool-call' && part.name === 'execute_typescript',
+      (part): part is ToolCallPart => part.type === 'tool-call',
     ),
   )
 
@@ -134,7 +171,9 @@ function Home() {
     const message = input.trim()
     if (!message || isLoading) return
     setInput('')
-    await sendMessage(message)
+    const sending = sendMessage(message)
+    scrollMessages()
+    await sending
   }
 
   return (
@@ -146,7 +185,10 @@ function Home() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
         <section className="flex min-h-0 flex-col border-r border-zinc-300">
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto p-4"
+            ref={messageScroll}
+          >
             {messages.length === 0 && (
               <p className="text-sm text-zinc-500">Send a CRM question.</p>
             )}
@@ -215,7 +257,10 @@ function Home() {
           </form>
         </section>
 
-        <aside className="min-h-0 overflow-y-auto bg-zinc-900 p-4 text-white">
+        <aside
+          className="min-h-0 overflow-y-auto bg-zinc-900 p-4 text-white"
+          ref={instrumentationScroll}
+        >
           <div className="mb-3 flex items-baseline justify-between">
             <h1 className="font-mono text-sm font-bold">INSTRUMENTATION</h1>
             <span className="font-mono text-xs text-zinc-500">
@@ -225,7 +270,7 @@ function Home() {
           <div className="space-y-3">
             {toolCalls.length === 0 && (
               <p className="font-mono text-xs text-zinc-500">
-                Waiting for execute_typescript.
+                Waiting for tool calls.
               </p>
             )}
             {toolCalls.map((part) => (
@@ -235,6 +280,7 @@ function Home() {
                 part={part}
               />
             ))}
+            <div ref={instrumentationEnd} />
           </div>
         </aside>
       </div>
