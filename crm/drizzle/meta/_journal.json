@@ -22,6 +22,20 @@
       "when": 1783884513954,
       "tag": "0002_dizzy_captain_britain",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784395359450,
+      "tag": "0003_superb_malice",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784396263106,
+      "tag": "0004_material_ezekiel_stane",
+      "breakpoints": true
     }
   ]
 }

@@ -75,9 +75,10 @@ Date: 2026-07-12. Sources: official TanStack docs (tanstack.com/ai), TanStack bl
 
 ## Open questions
 
-- `needsApproval` honored inside Code Mode `external_*` calls? Docs silent; assume no — verify in `@tanstack/ai-code-mode` source before shipping writes.
+- ~~`needsApproval` honored inside Code Mode `external_*` calls?~~ **Answered 2026-07-18 (source, `@tanstack/ai-code-mode@0.3.6`)**: NO. `bindings/tool-to-binding.js` calls `binding.execute(args, toolContext)` directly — no approval check anywhere in the bridge. Write tools passed to `createCodeMode` execute unconditionally.
 - Sandbox `external_*` bridge: per-call timeout on tool side? Long-running SQL vs 30s sandbox timeout interplay undocumented.
-- Runtime `context` (drizzle client) injection into Code Mode tools — docs show `chat()` context for plain tools; Code Mode docs don't show context plumbing. Verify `toolsToBindings` preserves it.
+- ~~Runtime `context` (drizzle client) injection into Code Mode tools~~ **Answered 2026-07-18 (source)**: NOT plumbed. `createEventAwareBindings` synthesizes `toolContext = { emitCustomEvent }` only — request-scoped `chat()` context never reaches Code Mode tools. Tools must close over their deps (crm's tools import `db` directly — fine for db-per-Instance deploys).
+- **Verified 2026-07-18**: sandbox truly can't run SQL itself — `isolate-node` compiles the script into an `isolated-vm` context whose only injected capability is the `external_*` bindings; no require/fetch/fs/net. "Agent writes SQL" is only possible as SQL *strings* passed to a host-side raw-SQL tool; library neither provides nor blocks one (any `z.string()` input works). Guarantees (zod, audit, soft-delete-only, no-DDL) live entirely in the tool layer — a raw-SQL tool would need a restricted pg role instead.
 - Raw free-form SQL tool (model writes SQL string) vs typed drizzle tools — docs benchmark used `external_queryTable`-style typed tools; no guidance on SQL-injection-shaped tool design.
 - Persistence of chat history (docs/chat/persistence.md exists — not reviewed) for multi-turn write agents.
 - `@tanstack/ai` 1.0 timeline / stability commitments — nothing published.
