@@ -3,6 +3,7 @@ import { beforeEach, expect, test } from 'vitest'
 import { z } from 'zod'
 
 import { db } from '#/db'
+import { chatTools } from './chat-tools'
 import {
   appointments,
   audit_log,
@@ -19,6 +20,11 @@ import {
   findClients,
   findPayments,
   findServices,
+  listAuditLog,
+  restoreAppointment,
+  restoreClient,
+  restorePayment,
+  restoreService,
   softDeleteAppointment,
   softDeleteClient,
   softDeletePayment,
@@ -35,6 +41,18 @@ beforeEach(async () => {
   await db.delete(appointments)
   await db.delete(clients)
   await db.delete(services)
+})
+
+test('chat registers restore and audit tools', () => {
+  expect(chatTools.map((tool) => tool.name)).toEqual(
+    expect.arrayContaining([
+      'restoreClient',
+      'restoreService',
+      'restoreAppointment',
+      'restorePayment',
+      'listAuditLog',
+    ]),
+  )
 })
 
 test('tool call writes audit_log row', async () => {
@@ -107,6 +125,56 @@ test('read tools write no audit rows', async () => {
   expect(await db.select().from(audit_log)).toEqual([])
 })
 
+test('listAuditLog filters records and can explicitly list all without auditing', async () => {
+  await db.insert(audit_log).values([
+    {
+      tool_name: 'updateClient',
+      input: { id: 7 },
+      entity: 'client',
+      entity_id: 7,
+      before: { id: 7, name: 'Before' },
+      ok: true,
+      error: null,
+      ts: new Date('2026-08-01T10:00:00.000Z'),
+    },
+    {
+      tool_name: 'restoreClient',
+      input: { id: 7 },
+      entity: 'client',
+      entity_id: 7,
+      before: { id: 7 },
+      ok: false,
+      error: 'conflict',
+      ts: new Date('2026-08-02T10:00:00.000Z'),
+    },
+    {
+      tool_name: 'updateService',
+      input: { id: 9 },
+      entity: 'service',
+      entity_id: 9,
+      before: { id: 9 },
+      ok: false,
+      error: 'failed',
+      ts: new Date('2026-08-03T10:00:00.000Z'),
+    },
+  ])
+
+  const filtered = await listAuditLog.execute({
+    entity: 'client',
+    entity_id: 7,
+    since: '2026-08-02T00:00:00.000Z',
+    until: '2026-08-02T23:59:59.999Z',
+    ok: false,
+  })
+  const all = await listAuditLog.execute({ all: true })
+
+  expect(filtered).toEqual([
+    expect.objectContaining({ tool_name: 'restoreClient', entity_id: 7 }),
+  ])
+  expect(all).toHaveLength(3)
+  expect(await db.select().from(audit_log)).toHaveLength(3)
+})
+
 test('createService then findServices returns it', async () => {
   await createService.execute({ name: 'Consulting', price: 50000, unit: 'hour' })
 
@@ -177,6 +245,186 @@ test('softDeleteClient hides client from findClients', async () => {
   const found = await findClients.execute({ query: 'Acme' })
 
   expect(found).toEqual([])
+})
+
+test('softDeleteClient rejects scheduled future appointments with details', async () => {
+  const client = await createClient.execute({ name: 'Acme' })
+  const service = await createService.execute({
+    name: 'Lesson',
+    price: 15000,
+    unit: 'hour',
+    duration_minutes: 60,
+  })
+  const startsAt = new Date(Date.now() + 86_400_000)
+  const appointment = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: startsAt.toISOString(),
+    mode: 'online',
+  })
+
+  await expect(softDeleteClient.execute({ id: client.id })).rejects.toThrow(
+    new RegExp(`${appointment.id}.*${startsAt.toISOString()}`),
+  )
+
+  expect(await findClients.execute({ query: 'Acme' })).toHaveLength(1)
+  expect(await findAppointments.execute({ client_id: client.id })).toHaveLength(1)
+})
+
+test('softDeleteClient allows past, completed, and cancelled appointments without cascades', async () => {
+  const client = await createClient.execute({ name: 'Acme' })
+  const service = await createService.execute({
+    name: 'Lesson',
+    price: 15000,
+    unit: 'hour',
+    duration_minutes: 60,
+  })
+  const past = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: new Date(Date.now() - 86_400_000).toISOString(),
+    mode: 'online',
+  })
+  const completed = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: new Date(Date.now() + 86_400_000).toISOString(),
+    mode: 'online',
+  })
+  const cancelled = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: new Date(Date.now() + 172_800_000).toISOString(),
+    mode: 'online',
+  })
+  await updateAppointment.execute({ id: completed.id, status: 'completed' })
+  await updateAppointment.execute({ id: cancelled.id, status: 'cancelled' })
+
+  await softDeleteClient.execute({ id: client.id })
+
+  expect(await findClients.execute({ query: 'Acme' })).toEqual([])
+  expect(await findAppointments.execute({ client_id: client.id })).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: past.id, deleted_at: null }),
+      expect.objectContaining({ id: completed.id, deleted_at: null }),
+      expect.objectContaining({ id: cancelled.id, deleted_at: null }),
+    ]),
+  )
+})
+
+test('restoreClient makes a deleted client active and audits its deleted state', async () => {
+  const client = await createClient.execute({ name: 'Acme' })
+  const deleted = await softDeleteClient.execute({ id: client.id })
+  await db.delete(audit_log)
+
+  const restored = await restoreClient.execute({ id: client.id })
+
+  expect(restored.deleted_at).toBeNull()
+  expect(await findClients.execute({ query: 'Acme' })).toHaveLength(1)
+  expect(await db.select().from(audit_log)).toContainEqual(
+    expect.objectContaining({
+      tool_name: 'restoreClient',
+      entity: 'client',
+      entity_id: client.id,
+      before: expect.objectContaining({
+        id: client.id,
+        deleted_at: deleted.deleted_at?.toISOString(),
+      }),
+      ok: true,
+      error: null,
+    }),
+  )
+})
+
+test('restoreAppointment makes a deleted appointment active', async () => {
+  const client = await createClient.execute({ name: 'Rosa' })
+  const service = await createService.execute({
+    name: 'Lesson',
+    price: 15000,
+    unit: 'hour',
+    duration_minutes: 60,
+  })
+  const appointment = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: '2026-08-01T15:00:00.000Z',
+    mode: 'online',
+  })
+  await softDeleteAppointment.execute({ id: appointment.id })
+
+  const restored = await restoreAppointment.execute({ id: appointment.id })
+
+  expect(restored.deleted_at).toBeNull()
+  expect(await findAppointments.execute({ client_id: client.id })).toHaveLength(1)
+})
+
+test('restoreAppointment rejects a rebooked slot with conflict details', async () => {
+  const rosa = await createClient.execute({ name: 'Rosa' })
+  const pedro = await createClient.execute({ name: 'Pedro' })
+  const service = await createService.execute({
+    name: 'Lesson',
+    price: 15000,
+    unit: 'hour',
+    duration_minutes: 60,
+  })
+  const deleted = await createAppointment.execute({
+    client_id: rosa.id,
+    service_id: service.id,
+    starts_at: '2026-08-01T15:00:00.000Z',
+    mode: 'online',
+  })
+  await softDeleteAppointment.execute({ id: deleted.id })
+  const conflict = await createAppointment.execute({
+    client_id: pedro.id,
+    service_id: service.id,
+    starts_at: '2026-08-01T15:30:00.000Z',
+    mode: 'online',
+  })
+  await db.delete(audit_log)
+
+  await expect(restoreAppointment.execute({ id: deleted.id })).rejects.toThrow(
+    /Pedro.*2026-08-01T15:30:00.000Z.*2026-08-01T16:30:00.000Z/,
+  )
+
+  expect((await db.select().from(appointments)).find((a) => a.id === deleted.id))
+    .toEqual(expect.objectContaining({ deleted_at: expect.any(Date) }))
+  expect(await db.select().from(audit_log)).toContainEqual(
+    expect.objectContaining({
+      tool_name: 'restoreAppointment',
+      entity_id: deleted.id,
+      before: expect.objectContaining({ id: deleted.id }),
+      ok: false,
+      error: expect.stringContaining(conflict.starts_at.toISOString()),
+    }),
+  )
+})
+
+test('restoreService and restorePayment make deleted rows active', async () => {
+  const client = await createClient.execute({ name: 'Acme' })
+  const service = await createService.execute({
+    name: 'Lesson',
+    price: 15000,
+    unit: 'hour',
+  })
+  const payment = await createPayment.execute({
+    client_id: client.id,
+    amount: 15000,
+  })
+  await softDeleteService.execute({ id: service.id })
+  await softDeletePayment.execute({ id: payment.id })
+
+  await restoreService.execute({ id: service.id })
+  await restorePayment.execute({ id: payment.id })
+
+  expect(await findServices.execute({ query: 'Lesson' })).toHaveLength(1)
+  expect(await findPayments.execute({ client_id: client.id })).toHaveLength(1)
+  const restoreRows = (await db.select().from(audit_log)).filter((row) =>
+    row.tool_name.startsWith('restore'),
+  )
+  expect(restoreRows).toEqual([
+    expect.objectContaining({ entity: 'service', before: expect.any(Object) }),
+    expect.objectContaining({ entity: 'payment', before: expect.any(Object) }),
+  ])
 })
 
 test('createAppointment snapshots flat price and computes ends_at', async () => {
@@ -581,7 +829,11 @@ test('updates and deletes audit each entity with its pre-mutation row', async ()
 
   await updateClient.execute({ id: client.id, notes: 'Updated' })
   await updateService.execute({ id: service.id, price: 20000 })
-  await updateAppointment.execute({ id: appointment.id, notes: 'Updated' })
+  await updateAppointment.execute({
+    id: appointment.id,
+    notes: 'Updated',
+    status: 'completed',
+  })
   await updatePayment.execute({ id: payment.id, amount: 20000 })
   await softDeleteClient.execute({ id: client.id })
   await softDeleteService.execute({ id: service.id })

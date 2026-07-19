@@ -9,6 +9,11 @@ import {
   findClients,
   findPayments,
   findServices,
+  listAuditLog,
+  restoreAppointment,
+  restoreClient,
+  restorePayment,
+  restoreService,
   softDeleteAppointment,
   softDeleteClient,
   softDeletePayment,
@@ -43,6 +48,12 @@ export const softDeleteClientTool = toolDefinition({
   inputSchema: softDeleteClient.inputSchema,
 }).server((input) => softDeleteClient.execute(input))
 
+export const restoreClientTool = toolDefinition({
+  name: restoreClient.name,
+  description: restoreClient.description,
+  inputSchema: restoreClient.inputSchema,
+}).server((input) => restoreClient.execute(input))
+
 export const createServiceTool = toolDefinition({
   name: createService.name,
   description: createService.description,
@@ -66,6 +77,12 @@ export const softDeleteServiceTool = toolDefinition({
   description: softDeleteService.description,
   inputSchema: softDeleteService.inputSchema,
 }).server((input) => softDeleteService.execute(input))
+
+export const restoreServiceTool = toolDefinition({
+  name: restoreService.name,
+  description: restoreService.description,
+  inputSchema: restoreService.inputSchema,
+}).server((input) => restoreService.execute(input))
 
 export const createAppointmentTool = toolDefinition({
   name: createAppointment.name,
@@ -91,6 +108,12 @@ export const softDeleteAppointmentTool = toolDefinition({
   inputSchema: softDeleteAppointment.inputSchema,
 }).server((input) => softDeleteAppointment.execute(input))
 
+export const restoreAppointmentTool = toolDefinition({
+  name: restoreAppointment.name,
+  description: restoreAppointment.description,
+  inputSchema: restoreAppointment.inputSchema,
+}).server((input) => restoreAppointment.execute(input))
+
 export const createPaymentTool = toolDefinition({
   name: createPayment.name,
   description: createPayment.description,
@@ -115,21 +138,38 @@ export const softDeletePaymentTool = toolDefinition({
   inputSchema: softDeletePayment.inputSchema,
 }).server((input) => softDeletePayment.execute(input))
 
+export const restorePaymentTool = toolDefinition({
+  name: restorePayment.name,
+  description: restorePayment.description,
+  inputSchema: restorePayment.inputSchema,
+}).server((input) => restorePayment.execute(input))
+
+export const listAuditLogTool = toolDefinition({
+  name: listAuditLog.name,
+  description: listAuditLog.description,
+  inputSchema: listAuditLog.inputSchema,
+}).server((input) => listAuditLog.execute(input))
+
 export const chatTools = [
   createClientTool,
   findClientsTool,
   updateClientTool,
   softDeleteClientTool,
+  restoreClientTool,
   createServiceTool,
   findServicesTool,
   updateServiceTool,
   softDeleteServiceTool,
+  restoreServiceTool,
   createAppointmentTool,
   findAppointmentsTool,
   updateAppointmentTool,
   softDeleteAppointmentTool,
+  restoreAppointmentTool,
   createPaymentTool,
   findPaymentsTool,
   updatePaymentTool,
   softDeletePaymentTool,
+  restorePaymentTool,
+  listAuditLogTool,
 ]

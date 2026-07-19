@@ -23,15 +23,25 @@ function auditedExecute<
   getBefore?: (input: z.output<TSchema>) => Promise<unknown>,
 ) {
   return async (input: z.input<TSchema>) => {
+    let before: unknown = null
+    let entityId: number | null = null
     try {
       const parsed = schema.parse(input)
-      const before = getBefore ? await getBefore(parsed) : null
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        'id' in parsed &&
+        typeof parsed.id === 'number'
+      )
+        entityId = parsed.id
+      before = getBefore ? await getBefore(parsed) : null
       const result = await operation(parsed)
+      entityId = result?.id ?? entityId
       await db.insert(audit_log).values({
         tool_name: toolName,
         input,
         entity,
-        entity_id: result?.id ?? null,
+        entity_id: entityId,
         before,
         ok: true,
         error: null,
@@ -42,8 +52,8 @@ function auditedExecute<
         tool_name: toolName,
         input,
         entity,
-        entity_id: null,
-        before: null,
+        entity_id: entityId,
+        before,
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       })
@@ -57,6 +67,51 @@ function parsedExecute<TSchema extends z.ZodType, TResult>(
   operation: (input: z.output<TSchema>) => Promise<TResult>,
 ) {
   return (input: z.input<TSchema>) => operation(schema.parse(input))
+}
+
+const listAuditLogInput = z
+  .object({
+    entity: z.enum(['client', 'service', 'appointment', 'payment']).optional(),
+    entity_id: z.number().optional(),
+    since: z.string().optional(),
+    until: z.string().optional(),
+    ok: z.boolean().optional(),
+    all: z.literal(true).optional(),
+  })
+  .refine(
+    ({ entity, entity_id, since, until, ok, all }) =>
+      all === true ||
+      entity !== undefined ||
+      entity_id !== undefined ||
+      since !== undefined ||
+      until !== undefined ||
+      ok !== undefined,
+    { message: 'Provide a filter or all: true' },
+  )
+
+export const listAuditLog = {
+  name: 'listAuditLog',
+  description:
+    'List audit records by entity, entity ID, timestamp range, or outcome. Pass all: true for every record.',
+  inputSchema: listAuditLogInput,
+  execute: parsedExecute(
+    listAuditLogInput,
+    async ({ entity, entity_id, since, until, ok }) =>
+      db
+        .select()
+        .from(audit_log)
+        .where(
+          and(
+            entity ? eq(audit_log.entity, entity) : undefined,
+            entity_id !== undefined
+              ? eq(audit_log.entity_id, entity_id)
+              : undefined,
+            since ? gte(audit_log.ts, new Date(since)) : undefined,
+            until ? lte(audit_log.ts, new Date(until)) : undefined,
+            ok !== undefined ? eq(audit_log.ok, ok) : undefined,
+          ),
+        ),
+  ),
 }
 
 const createClientInput = z.object({
@@ -190,6 +245,34 @@ export const softDeleteService = {
   ),
 }
 
+const restoreServiceInput = z.object({ id: z.number() })
+
+export const restoreService = {
+  name: 'restoreService',
+  description: 'Restore a soft-deleted service',
+  inputSchema: restoreServiceInput,
+  execute: auditedExecute(
+    'restoreService',
+    'service',
+    restoreServiceInput,
+    async ({ id }) => {
+      const [service] = await db
+        .update(services)
+        .set({ deleted_at: null })
+        .where(eq(services.id, id))
+        .returning()
+      return service
+    },
+    async ({ id }) => {
+      const [service] = await db
+        .select()
+        .from(services)
+        .where(eq(services.id, id))
+      return service
+    },
+  ),
+}
+
 const updateClientInput = z.object({
   id: z.number(),
   name: z.string().optional(),
@@ -237,9 +320,57 @@ export const softDeleteClient = {
     'client',
     softDeleteClientInput,
     async ({ id }) => {
+      const blockingAppointments = await db
+        .select({ id: appointments.id, starts_at: appointments.starts_at })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.client_id, id),
+            eq(appointments.status, 'scheduled'),
+            gt(appointments.starts_at, sql`now()`),
+            isNull(appointments.deleted_at),
+          ),
+        )
+      if (blockingAppointments.length)
+        throw new Error(
+          `Client ${id} has scheduled future appointments: ${blockingAppointments
+            .map(
+              (appointment) =>
+                `${appointment.id} (${appointment.starts_at.toISOString()})`,
+            )
+            .join(', ')}`,
+        )
       const [client] = await db
         .update(clients)
         .set({ deleted_at: sql`now()` })
+        .where(eq(clients.id, id))
+        .returning()
+      return client
+    },
+    async ({ id }) => {
+      const [client] = await db
+        .select()
+        .from(clients)
+        .where(eq(clients.id, id))
+      return client
+    },
+  ),
+}
+
+const restoreClientInput = z.object({ id: z.number() })
+
+export const restoreClient = {
+  name: 'restoreClient',
+  description: 'Restore a soft-deleted client',
+  inputSchema: restoreClientInput,
+  execute: auditedExecute(
+    'restoreClient',
+    'client',
+    restoreClientInput,
+    async ({ id }) => {
+      const [client] = await db
+        .update(clients)
+        .set({ deleted_at: null })
         .where(eq(clients.id, id))
         .returning()
       return client
@@ -354,6 +485,41 @@ export const softDeleteAppointment = {
       const [appointment] = await db
         .update(appointments)
         .set({ deleted_at: sql`now()` })
+        .where(eq(appointments.id, id))
+        .returning()
+      return appointment
+    },
+    async ({ id }) => {
+      const [appointment] = await db
+        .select()
+        .from(appointments)
+        .where(eq(appointments.id, id))
+      return appointment
+    },
+  ),
+}
+
+const restoreAppointmentInput = z.object({ id: z.number() })
+
+export const restoreAppointment = {
+  name: 'restoreAppointment',
+  description:
+    'Restore a soft-deleted appointment. Rejects if its time now conflicts.',
+  inputSchema: restoreAppointmentInput,
+  execute: auditedExecute(
+    'restoreAppointment',
+    'appointment',
+    restoreAppointmentInput,
+    async ({ id }) => {
+      const [existing] = await db
+        .select()
+        .from(appointments)
+        .where(eq(appointments.id, id))
+      if (!existing) throw new Error(`Appointment ${id} not found`)
+      await assertNoOverlap(existing.starts_at, existing.ends_at, id)
+      const [appointment] = await db
+        .update(appointments)
+        .set({ deleted_at: null })
         .where(eq(appointments.id, id))
         .returning()
       return appointment
@@ -581,6 +747,34 @@ export const softDeletePayment = {
       const [payment] = await db
         .update(payments)
         .set({ deleted_at: sql`now()` })
+        .where(eq(payments.id, id))
+        .returning()
+      return payment
+    },
+    async ({ id }) => {
+      const [payment] = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, id))
+      return payment
+    },
+  ),
+}
+
+const restorePaymentInput = z.object({ id: z.number() })
+
+export const restorePayment = {
+  name: 'restorePayment',
+  description: 'Restore a soft-deleted payment',
+  inputSchema: restorePaymentInput,
+  execute: auditedExecute(
+    'restorePayment',
+    'payment',
+    restorePaymentInput,
+    async ({ id }) => {
+      const [payment] = await db
+        .update(payments)
+        .set({ deleted_at: null })
         .where(eq(payments.id, id))
         .returning()
       return payment
