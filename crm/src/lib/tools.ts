@@ -10,22 +10,53 @@ import {
   services,
 } from '#/db/schema'
 
-function auditedExecute<TSchema extends z.ZodType, TResult>(
+type AuditEntity = 'client' | 'service' | 'appointment' | 'payment'
+
+function auditedExecute<
+  TSchema extends z.ZodType,
+  TResult extends { id: number } | undefined,
+>(
   toolName: string,
+  entity: AuditEntity,
+  schema: TSchema,
+  operation: (input: z.output<TSchema>) => Promise<TResult>,
+  getBefore?: (input: z.output<TSchema>) => Promise<unknown>,
+) {
+  return async (input: z.input<TSchema>) => {
+    try {
+      const parsed = schema.parse(input)
+      const before = getBefore ? await getBefore(parsed) : null
+      const result = await operation(parsed)
+      await db.insert(audit_log).values({
+        tool_name: toolName,
+        input,
+        entity,
+        entity_id: result?.id ?? null,
+        before,
+        ok: true,
+        error: null,
+      })
+      return result
+    } catch (error) {
+      await db.insert(audit_log).values({
+        tool_name: toolName,
+        input,
+        entity,
+        entity_id: null,
+        before: null,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
+  }
+}
+
+function parsedExecute<TSchema extends z.ZodType, TResult>(
   schema: TSchema,
   operation: (input: z.output<TSchema>) => Promise<TResult>,
 ) {
-  return async (input: z.input<TSchema>) => {
-    let ok = false
-
-    try {
-      const result = await operation(schema.parse(input))
-      ok = true
-      return result
-    } finally {
-      await db.insert(audit_log).values({ tool_name: toolName, input, ok })
-    }
-  }
+  return (input: z.input<TSchema>) => operation(schema.parse(input))
 }
 
 const createClientInput = z.object({
@@ -41,6 +72,7 @@ export const createClient = {
   inputSchema: createClientInput,
   execute: auditedExecute(
     'createClient',
+    'client',
     createClientInput,
     async (values) => {
       const [client] = await db.insert(clients).values(values).returning()
@@ -62,6 +94,7 @@ export const createService = {
   inputSchema: createServiceInput,
   execute: auditedExecute(
     'createService',
+    'service',
     createServiceInput,
     async (values) => {
       const [service] = await db.insert(services).values(values).returning()
@@ -78,8 +111,7 @@ export const findServices = {
   name: 'findServices',
   description: 'Find active services by name',
   inputSchema: findServicesInput,
-  execute: auditedExecute(
-    'findServices',
+  execute: parsedExecute(
     findServicesInput,
     async ({ query }) =>
       db
@@ -108,6 +140,7 @@ export const updateService = {
   inputSchema: updateServiceInput,
   execute: auditedExecute(
     'updateService',
+    'service',
     updateServiceInput,
     async ({ id, ...fields }) => {
       const [service] = await db
@@ -115,6 +148,13 @@ export const updateService = {
         .set({ ...fields, updated_at: sql`now()` })
         .where(eq(services.id, id))
         .returning()
+      return service
+    },
+    async ({ id }) => {
+      const [service] = await db
+        .select()
+        .from(services)
+        .where(eq(services.id, id))
       return service
     },
   ),
@@ -130,6 +170,7 @@ export const softDeleteService = {
   inputSchema: softDeleteServiceInput,
   execute: auditedExecute(
     'softDeleteService',
+    'service',
     softDeleteServiceInput,
     async ({ id }) => {
       const [service] = await db
@@ -137,6 +178,13 @@ export const softDeleteService = {
         .set({ deleted_at: sql`now()` })
         .where(eq(services.id, id))
         .returning()
+      return service
+    },
+    async ({ id }) => {
+      const [service] = await db
+        .select()
+        .from(services)
+        .where(eq(services.id, id))
       return service
     },
   ),
@@ -156,6 +204,7 @@ export const updateClient = {
   inputSchema: updateClientInput,
   execute: auditedExecute(
     'updateClient',
+    'client',
     updateClientInput,
     async ({ id, ...fields }) => {
       const [client] = await db
@@ -163,6 +212,13 @@ export const updateClient = {
         .set({ ...fields, updated_at: sql`now()` })
         .where(eq(clients.id, id))
         .returning()
+      return client
+    },
+    async ({ id }) => {
+      const [client] = await db
+        .select()
+        .from(clients)
+        .where(eq(clients.id, id))
       return client
     },
   ),
@@ -178,6 +234,7 @@ export const softDeleteClient = {
   inputSchema: softDeleteClientInput,
   execute: auditedExecute(
     'softDeleteClient',
+    'client',
     softDeleteClientInput,
     async ({ id }) => {
       const [client] = await db
@@ -185,6 +242,13 @@ export const softDeleteClient = {
         .set({ deleted_at: sql`now()` })
         .where(eq(clients.id, id))
         .returning()
+      return client
+    },
+    async ({ id }) => {
+      const [client] = await db
+        .select()
+        .from(clients)
+        .where(eq(clients.id, id))
       return client
     },
   ),
@@ -201,8 +265,7 @@ export const findAppointments = {
   name: 'findAppointments',
   description: 'Find appointments by client, date range, and status',
   inputSchema: findAppointmentsInput,
-  execute: auditedExecute(
-    'findAppointments',
+  execute: parsedExecute(
     findAppointmentsInput,
     async ({ client_id, from, to, status }) =>
       db
@@ -236,6 +299,7 @@ export const updateAppointment = {
   inputSchema: updateAppointmentInput,
   execute: auditedExecute(
     'updateAppointment',
+    'appointment',
     updateAppointmentInput,
     async ({ id, starts_at, duration_minutes, ...fields }) => {
       const set: Record<string, unknown> = { ...fields, updated_at: sql`now()` }
@@ -264,6 +328,13 @@ export const updateAppointment = {
         .returning()
       return appointment
     },
+    async ({ id }) => {
+      const [appointment] = await db
+        .select()
+        .from(appointments)
+        .where(eq(appointments.id, id))
+      return appointment
+    },
   ),
 }
 
@@ -277,6 +348,7 @@ export const softDeleteAppointment = {
   inputSchema: softDeleteAppointmentInput,
   execute: auditedExecute(
     'softDeleteAppointment',
+    'appointment',
     softDeleteAppointmentInput,
     async ({ id }) => {
       const [appointment] = await db
@@ -284,6 +356,13 @@ export const softDeleteAppointment = {
         .set({ deleted_at: sql`now()` })
         .where(eq(appointments.id, id))
         .returning()
+      return appointment
+    },
+    async ({ id }) => {
+      const [appointment] = await db
+        .select()
+        .from(appointments)
+        .where(eq(appointments.id, id))
       return appointment
     },
   ),
@@ -297,8 +376,7 @@ export const findClients = {
   name: 'findClients',
   description: 'Find active clients by name',
   inputSchema: findClientsInput,
-  execute: auditedExecute(
-    'findClients',
+  execute: parsedExecute(
     findClientsInput,
     async ({ query }) =>
       db
@@ -359,6 +437,7 @@ export const createAppointment = {
   inputSchema: createAppointmentInput,
   execute: auditedExecute(
     'createAppointment',
+    'appointment',
     createAppointmentInput,
     async (input) => {
       const [service] = await db
@@ -409,6 +488,7 @@ export const createPayment = {
   inputSchema: createPaymentInput,
   execute: auditedExecute(
     'createPayment',
+    'payment',
     createPaymentInput,
     async ({ paid_at, ...rest }) => {
       const [payment] = await db
@@ -430,8 +510,7 @@ export const findPayments = {
   name: 'findPayments',
   description: 'Find payments by client and paid_at range',
   inputSchema: findPaymentsInput,
-  execute: auditedExecute(
-    'findPayments',
+  execute: parsedExecute(
     findPaymentsInput,
     async ({ client_id, from, to }) =>
       db
@@ -462,6 +541,7 @@ export const updatePayment = {
   inputSchema: updatePaymentInput,
   execute: auditedExecute(
     'updatePayment',
+    'payment',
     updatePaymentInput,
     async ({ id, paid_at, ...fields }) => {
       const [payment] = await db
@@ -473,6 +553,13 @@ export const updatePayment = {
         })
         .where(eq(payments.id, id))
         .returning()
+      return payment
+    },
+    async ({ id }) => {
+      const [payment] = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, id))
       return payment
     },
   ),
@@ -488,6 +575,7 @@ export const softDeletePayment = {
   inputSchema: softDeletePaymentInput,
   execute: auditedExecute(
     'softDeletePayment',
+    'payment',
     softDeletePaymentInput,
     async ({ id }) => {
       const [payment] = await db
@@ -495,6 +583,13 @@ export const softDeletePayment = {
         .set({ deleted_at: sql`now()` })
         .where(eq(payments.id, id))
         .returning()
+      return payment
+    },
+    async ({ id }) => {
+      const [payment] = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, id))
       return payment
     },
   ),

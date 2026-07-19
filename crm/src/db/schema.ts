@@ -13,7 +13,11 @@ export const audit_log = pgTable('audit_log', {
   id: serial().primaryKey(),
   tool_name: text().notNull(),
   input: jsonb().notNull(),
+  entity: text().notNull(),
+  entity_id: integer(),
+  before: jsonb(),
   ok: boolean().notNull(),
+  error: text(),
   ts: timestamp({ withTimezone: true }).defaultNow(),
 })
 

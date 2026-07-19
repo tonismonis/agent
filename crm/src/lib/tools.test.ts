@@ -25,6 +25,7 @@ import {
   softDeleteService,
   updateAppointment,
   updateClient,
+  updatePayment,
   updateService,
 } from './tools'
 
@@ -39,7 +40,7 @@ beforeEach(async () => {
 test('tool call writes audit_log row', async () => {
   const input = { name: 'Acme', notes: 'New client' }
 
-  await createClient.execute(input)
+  const client = await createClient.execute(input)
 
   const rows = await db.select().from(audit_log)
   expect(rows).toHaveLength(1)
@@ -47,7 +48,11 @@ test('tool call writes audit_log row', async () => {
     expect.objectContaining({
       tool_name: 'createClient',
       input,
+      entity: 'client',
+      entity_id: client.id,
+      before: null,
       ok: true,
+      error: null,
     }),
   )
 })
@@ -64,7 +69,11 @@ test('failed tool call writes audit row with ok=false', async () => {
     expect.objectContaining({
       tool_name: 'createClient',
       input,
+      entity: 'client',
+      entity_id: null,
+      before: null,
       ok: false,
+      error: expect.stringContaining('name'),
     }),
   )
 })
@@ -85,6 +94,17 @@ test('createClient then findClients returns the created client', async () => {
   expect(found).toEqual(
     expect.arrayContaining([expect.objectContaining({ name: 'Acme' })]),
   )
+})
+
+test('read tools write no audit rows', async () => {
+  await Promise.all([
+    findClients.execute({}),
+    findServices.execute({}),
+    findAppointments.execute({}),
+    findPayments.execute({}),
+  ])
+
+  expect(await db.select().from(audit_log)).toEqual([])
 })
 
 test('createService then findServices returns it', async () => {
@@ -121,6 +141,20 @@ test('updateClient changes fields and bumps updated_at', async () => {
 
   expect(found).toEqual(expect.objectContaining({ name: 'Beta', notes: 'New' }))
   expect(found.updated_at.getTime()).toBeGreaterThan(created.updated_at.getTime())
+
+  const [audit] = await db
+    .select()
+    .from(audit_log)
+    .where(eq(audit_log.tool_name, 'updateClient'))
+  expect(audit).toEqual(
+    expect.objectContaining({
+      entity: 'client',
+      entity_id: created.id,
+      before: expect.objectContaining({ name: 'Acme', notes: 'Old' }),
+      ok: true,
+      error: null,
+    }),
+  )
 })
 
 test('softDeleteService hides from findServices', async () => {
@@ -525,6 +559,61 @@ test('softDeletePayment hides it from findPayments', async () => {
   expect(await findPayments.execute({ client_id: rosa.id })).toEqual([])
 })
 
+test('updates and deletes audit each entity with its pre-mutation row', async () => {
+  const client = await createClient.execute({ name: 'Rosa' })
+  const service = await createService.execute({
+    name: 'Lesson',
+    price: 15000,
+    unit: 'hour',
+    duration_minutes: 60,
+  })
+  const appointment = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: '2026-08-01T15:00:00.000Z',
+    mode: 'online',
+  })
+  const payment = await createPayment.execute({
+    client_id: client.id,
+    amount: 15000,
+  })
+  await db.delete(audit_log)
+
+  await updateClient.execute({ id: client.id, notes: 'Updated' })
+  await updateService.execute({ id: service.id, price: 20000 })
+  await updateAppointment.execute({ id: appointment.id, notes: 'Updated' })
+  await updatePayment.execute({ id: payment.id, amount: 20000 })
+  await softDeleteClient.execute({ id: client.id })
+  await softDeleteService.execute({ id: service.id })
+  await softDeleteAppointment.execute({ id: appointment.id })
+  await softDeletePayment.execute({ id: payment.id })
+
+  const rows = await db.select().from(audit_log)
+  const expected = [
+    ['updateClient', 'client', client.id],
+    ['updateService', 'service', service.id],
+    ['updateAppointment', 'appointment', appointment.id],
+    ['updatePayment', 'payment', payment.id],
+    ['softDeleteClient', 'client', client.id],
+    ['softDeleteService', 'service', service.id],
+    ['softDeleteAppointment', 'appointment', appointment.id],
+    ['softDeletePayment', 'payment', payment.id],
+  ] as const
+
+  expect(rows).toHaveLength(expected.length)
+  for (const [toolName, entity, entityId] of expected) {
+    expect(rows.find((row) => row.tool_name === toolName)).toEqual(
+      expect.objectContaining({
+        entity,
+        entity_id: entityId,
+        before: expect.objectContaining({ id: entityId }),
+        ok: true,
+        error: null,
+      }),
+    )
+  }
+})
+
 test('appointment and payment tools write audit rows, ok=false on overlap', async () => {
   const rosa = await createClient.execute({ name: 'Rosa' })
   const pedro = await createClient.execute({ name: 'Pedro' })
@@ -555,8 +644,33 @@ test('appointment and payment tools write audit rows, ok=false on overlap', asyn
   const ok = rows.filter((r) => r.tool_name === 'createAppointment' && r.ok)
   const failed = rows.filter((r) => r.tool_name === 'createAppointment' && !r.ok)
   expect(ok).toHaveLength(1)
+  expect(ok[0]).toEqual(
+    expect.objectContaining({
+      entity: 'appointment',
+      entity_id: expect.any(Number),
+      before: null,
+      error: null,
+    }),
+  )
   expect(failed).toHaveLength(1)
-  expect(rows.some((r) => r.tool_name === 'createPayment' && r.ok)).toBe(true)
+  expect(failed[0]).toEqual(
+    expect.objectContaining({
+      entity: 'appointment',
+      entity_id: null,
+      before: null,
+      error: expect.stringContaining('Rosa'),
+    }),
+  )
+  expect(rows).toContainEqual(
+    expect.objectContaining({
+      tool_name: 'createPayment',
+      entity: 'payment',
+      entity_id: expect.any(Number),
+      before: null,
+      ok: true,
+      error: null,
+    }),
+  )
 })
 
 test('createAppointment throws clean error for nonexistent or deleted service', async () => {
