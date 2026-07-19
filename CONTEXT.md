@@ -37,7 +37,10 @@ Money actually received from a Client, usually tied to one Appointment. Revenue-
 _Avoid_: Invoice, charge, transaction
 
 **Soft delete**:
-The only delete: rows get `deleted_at`, never removed. Agent has no hard-delete capability.
+The only delete: rows get `deleted_at`, never removed. Agent has no hard-delete capability. Erases mistakes only — a cancelled Appointment is a status, not a delete. Reversed by Restore.
+
+**Restore**:
+Un-delete: flips `deleted_at` back to null via a `restore_*` tool. Restoring an Appointment re-runs the overlap check.
 
 **Audit log**:
-Append-only record of every agent tool call (tool, input, ok, timestamp), written in the tool bridge.
+Append-only record of every agent *write* (tool, input, entity+id, before-state, ok, error, timestamp), written in the tool bridge. Reads are not logged. Never pruned; the sole durable record of what the agent did.
