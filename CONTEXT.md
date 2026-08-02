@@ -1,16 +1,12 @@
 # CRM for friends
 
-Chat-only single-tenant CRM for freelancer friends; a code-mode agent turns chat into data operations against a fixed Postgres schema.
+Chat-only CRM for freelancers; a code-mode agent turns chat into data operations.
 
 ## Language
 
 **Owner**:
-The freelancer a CRM instance belongs to; the only user of that instance.
-_Avoid_: User, tenant, friend
-
-**Instance**:
-One Owner's copy of the app with its own private database. Nothing is shared between Instances; distribution means many Instances, never one shared deploy.
-_Avoid_: Tenant, multitenancy
+The freelancer using the CRM; the identity and isolation root for all their CRM data. Exactly one authenticated identity represents an Owner in v1.
+_Avoid_: User, tenant, friend, workspace, organization
 
 **Client**:
 A person the Owner sells to. Name required; contact details optional.
@@ -37,10 +33,13 @@ Money actually received from a Client, usually tied to one Appointment. Revenue-
 _Avoid_: Invoice, charge, transaction
 
 **Soft delete**:
-The only delete: rows get `deleted_at`, never removed. Agent has no hard-delete capability. Erases mistakes only — a cancelled Appointment is a status, not a delete. Reversed by Restore.
+The only agent-facing delete: records remain recoverable. Erases mistakes only — a cancelled Appointment is a status, not a delete. Reversed by Restore.
 
 **Restore**:
 Un-delete: flips `deleted_at` back to null via a `restore_*` tool. Restoring an Appointment re-runs the overlap check.
 
 **Audit log**:
-Append-only record of every agent *write* (tool, input, entity+id, before-state, ok, error, timestamp), written in the tool bridge. Reads are not logged. Never pruned; the sole durable record of what the agent did.
+Append-only record of every agent *write* (tool, input, entity+id, before-state, ok, error, timestamp). Reads are not logged. Retained for the Owner's lifetime; the sole durable record of what the agent did.
+
+**Owner purge**:
+Permanent erasure of an Owner and all identifying CRM, chat, audit, usage, and identity data. An operator-only offboarding action, never an agent tool.

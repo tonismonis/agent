@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0002
+---
+
 # Database per Instance
 
 Every Instance (one Owner's deploy) gets its own Postgres database. No shared multi-tenant database, no `tenant_id` columns, no RLS — anywhere.
