@@ -38,6 +38,10 @@ The only agent-facing delete: records remain recoverable. Erases mistakes only â
 **Restore**:
 Un-delete: flips `deleted_at` back to null via a `restore_*` tool. Restoring an Appointment re-runs the overlap check.
 
+**Working hours**:
+The Owner's weekly availability template: per-weekday time ranges (no rows for a day = day off). Bounds free-slot suggestions via `find_free_slots`; one-off exceptions and vacations are post-v1.
+_Avoid_: Schedule, availability, calendar
+
 **Audit log**:
 Append-only record of every agent *write* (tool, input, entity+id, before-state, ok, error, timestamp). Reads are not logged. Retained for the Owner's lifetime; the sole durable record of what the agent did.
 
