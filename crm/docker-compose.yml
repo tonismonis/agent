@@ -9,6 +9,34 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  pool:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: crm
+      DB_USER: crm_app
+      DB_PASSWORD: crm_app
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: 1
+      MAX_CLIENT_CONN: 100
+    ports:
+      - "6433:5432"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U crm_app -d crm"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
 volumes:
   pgdata:

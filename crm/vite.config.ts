@@ -11,6 +11,8 @@ const config = defineConfig({
   plugins: [devtools(), tailwindcss(), tanstackStart(), viteReact()],
   test: {
     setupFiles: ['./src/test/setup.ts'],
+    // Database integration tests share one local schema.
+    fileParallelism: false,
   },
 })
 

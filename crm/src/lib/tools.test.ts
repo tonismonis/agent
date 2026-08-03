@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { aroundEach, beforeAll, beforeEach, expect, test } from 'vitest'
 import { z } from 'zod'
@@ -68,12 +68,17 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-  await adminDb.delete(audit_log)
-  await adminDb.delete(payments)
-  await adminDb.delete(appointments)
-  await adminDb.delete(clients)
-  await adminDb.delete(services)
-  await adminDb.delete(working_hours)
+  const ownerIds = [ownerA, ownerB]
+  await adminDb.delete(audit_log).where(inArray(audit_log.owner_id, ownerIds))
+  await adminDb.delete(payments).where(inArray(payments.owner_id, ownerIds))
+  await adminDb
+    .delete(appointments)
+    .where(inArray(appointments.owner_id, ownerIds))
+  await adminDb.delete(clients).where(inArray(clients.owner_id, ownerIds))
+  await adminDb.delete(services).where(inArray(services.owner_id, ownerIds))
+  await adminDb
+    .delete(working_hours)
+    .where(inArray(working_hours.owner_id, ownerIds))
   await adminDb
     .update(owners)
     .set({ name: 'Alice', profession: 'Consultant', restricted_notes: false })
