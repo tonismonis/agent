@@ -31,7 +31,14 @@ export const Route = createFileRoute('/api/chat')({
           'anthropic/claude-haiku-4-5') as Parameters<typeof openRouterText>[0]
         const stream = chat({
           adapter: openRouterText(model),
-          systemPrompts: [buildAppPrompt(), systemPrompt],
+          systemPrompts: [
+            buildAppPrompt({
+              now: new Date(),
+              profession: owner.profession,
+              restrictedNotes: owner.restricted_notes,
+            }),
+            systemPrompt,
+          ],
           tools: [tool],
           agentLoopStrategy: maxIterations(5),
           messages,

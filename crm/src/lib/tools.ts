@@ -6,16 +6,54 @@ import {
   appointments,
   audit_log,
   clients,
+  owners,
   payments,
   services,
+  working_hours,
 } from '#/db/schema'
 
-type AuditEntity = 'client' | 'service' | 'appointment' | 'payment'
+type AuditEntity =
+  | 'client'
+  | 'service'
+  | 'appointment'
+  | 'payment'
+  | 'working_hours'
+  | 'owner'
 
-function auditedExecute<
-  TSchema extends z.ZodType,
-  TResult extends { id: number } | undefined,
->(
+function containsNotes(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsNotes)
+  if (value === null || typeof value !== 'object') return false
+  return Object.entries(value).some(
+    ([key, nested]) => key === 'notes' || containsNotes(nested),
+  )
+}
+
+function redactNotes<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(redactNotes) as T
+  if (value === null || typeof value !== 'object' || value instanceof Date)
+    return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'notes')
+      .map(([key, nested]) => [key, redactNotes(nested)]),
+  ) as T
+}
+
+class RestrictedNotesError extends Error {}
+
+async function enforceNotesBoundary(input: unknown) {
+  const [owner] = await db
+    .select({ restricted: owners.restricted_notes })
+    .from(owners)
+    .where(eq(owners.id, sql`current_setting('app.owner_id')::uuid`))
+    .limit(1)
+  if (!owner) throw new Error('Owner not found')
+  if (owner.restricted && containsNotes(input))
+    throw new RestrictedNotesError('Notes are disabled for this Owner')
+  return owner.restricted
+}
+
+function auditedExecute<TSchema extends z.ZodType, TResult>(
   toolName: string,
   entity: AuditEntity,
   schema: TSchema,
@@ -25,7 +63,9 @@ function auditedExecute<
   return async (input: z.input<TSchema>) => {
     let before: unknown = null
     let entityId: number | null = null
+    let restricted = false
     try {
+      restricted = await enforceNotesBoundary(input)
       const parsed = schema.parse(input)
       if (
         typeof parsed === 'object' &&
@@ -35,22 +75,30 @@ function auditedExecute<
       )
         entityId = parsed.id
       before = getBefore ? await getBefore(parsed) : null
+      if (restricted) before = redactNotes(before)
       const result = await operation(parsed)
-      entityId = result?.id ?? entityId
+      if (
+        typeof result === 'object' &&
+        result !== null &&
+        'id' in result &&
+        typeof result.id === 'number'
+      )
+        entityId = result.id
       await db.insert(audit_log).values({
         tool_name: toolName,
-        input,
+        input: restricted ? redactNotes(input) : input,
         entity,
         entity_id: entityId,
         before,
         ok: true,
         error: null,
       })
-      return result
+      return restricted ? redactNotes(result) : result
     } catch (error) {
+      if (error instanceof RestrictedNotesError) restricted = true
       await db.insert(audit_log).values({
         tool_name: toolName,
-        input,
+        input: restricted ? redactNotes(input) : input,
         entity,
         entity_id: entityId,
         before,
@@ -66,7 +114,12 @@ function parsedExecute<TSchema extends z.ZodType, TResult>(
   schema: TSchema,
   operation: (input: z.output<TSchema>) => Promise<TResult>,
 ) {
-  return (input: z.input<TSchema>) => operation(schema.parse(input))
+  return async (input: z.input<TSchema>) => {
+    const restricted = await enforceNotesBoundary(input)
+    const parsed = schema.parse(input)
+    const result = await operation(parsed)
+    return restricted ? redactNotes(result) : result
+  }
 }
 
 const listAuditLogInput = z
@@ -111,6 +164,156 @@ export const listAuditLog = {
             ok !== undefined ? eq(audit_log.ok, ok) : undefined,
           ),
         ),
+  ),
+}
+
+const workingHourSchema = z.object({
+  weekday: z.number().int().min(0).max(6),
+  start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  end_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+})
+
+const setWorkingHoursInput = z
+  .object({ hours: z.array(workingHourSchema) })
+  .superRefine(({ hours }, context) => {
+    const sorted = [...hours].sort(
+      (a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time),
+    )
+    for (let index = 0; index < sorted.length; index++) {
+      const current = sorted[index]
+      if (current.start_time >= current.end_time)
+        context.addIssue({
+          code: 'custom',
+          message: `start_time must be before end_time for weekday ${current.weekday}`,
+        })
+      const previous = sorted[index - 1]
+      if (
+        previous?.weekday === current.weekday &&
+        current.start_time < previous.end_time
+      )
+        context.addIssue({
+          code: 'custom',
+          message: `Working hours overlap on weekday ${current.weekday}`,
+        })
+    }
+  })
+
+export const setWorkingHours = {
+  name: 'set_working_hours',
+  description:
+    'Replace the complete weekly working-hours template. Omitted weekdays become days off.',
+  inputSchema: setWorkingHoursInput,
+  execute: auditedExecute(
+    'set_working_hours',
+    'working_hours',
+    setWorkingHoursInput,
+    async ({ hours }) => {
+      await db.delete(working_hours)
+      if (hours.length === 0) return []
+      return db.insert(working_hours).values(hours).returning()
+    },
+    async () => db.select().from(working_hours),
+  ),
+}
+
+const localDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+const findFreeSlotsInput = z
+  .object({
+    from: localDate,
+    to: localDate,
+    duration_minutes: z.number().int().positive(),
+  })
+  .refine(({ from, to }) => from <= to, {
+    message: 'from must be on or before to',
+  })
+
+export const findFreeSlots = {
+  name: 'find_free_slots',
+  description:
+    'Find exact-duration free slots in America/Santiago between inclusive local dates, excluding non-cancelled appointments.',
+  inputSchema: findFreeSlotsInput,
+  execute: parsedExecute(
+    findFreeSlotsInput,
+    async ({ from, to, duration_minutes }) => {
+      const result = await db.execute<{
+        starts_at: Date
+        ends_at: Date
+      }>(sql`
+        with days as (
+          select generate_series(${from}::date, ${to}::date, interval '1 day')::date as day
+        ), windows as (
+          select tstzrange(
+            (days.day + ${working_hours.start_time}) at time zone 'America/Santiago',
+            (days.day + ${working_hours.end_time}) at time zone 'America/Santiago',
+            '[)'
+          ) as slot
+          from days
+          join ${working_hours}
+            on ${working_hours.weekday} = extract(dow from days.day)::integer
+        ), free_ranges as (
+          select free.slot
+          from windows
+          left join lateral (
+            select coalesce(
+              range_agg(tstzrange(
+                greatest(${appointments.starts_at}, lower(windows.slot)),
+                least(${appointments.ends_at}, upper(windows.slot)),
+                '[)'
+              )),
+              '{}'::tstzmultirange
+            ) as occupied
+            from ${appointments}
+            where ${appointments.status} <> 'cancelled'
+              and ${appointments.deleted_at} is null
+              and tstzrange(${appointments.starts_at}, ${appointments.ends_at}, '[)') && windows.slot
+          ) busy on true
+          cross join lateral unnest(
+            tstzmultirange(windows.slot) - busy.occupied
+          ) as free(slot)
+        )
+        select candidate as starts_at,
+          candidate + make_interval(mins => ${duration_minutes}) as ends_at
+        from free_ranges
+        cross join lateral generate_series(
+          lower(slot),
+          upper(slot) - make_interval(mins => ${duration_minutes}),
+          make_interval(mins => ${duration_minutes})
+        ) as candidate
+        order by starts_at
+      `)
+      return result.rows.map(({ starts_at, ends_at }) => ({
+        starts_at: new Date(starts_at),
+        ends_at: new Date(ends_at),
+      }))
+    },
+  ),
+}
+
+const updateOwnerProfileInput = z.object({ name: z.string().min(1) }).strict()
+
+export const updateOwnerProfile = {
+  name: 'update_owner_profile',
+  description: "Update the Owner's name. Other profile fields are operator-only.",
+  inputSchema: updateOwnerProfileInput,
+  execute: auditedExecute(
+    'update_owner_profile',
+    'owner',
+    updateOwnerProfileInput,
+    async ({ name }) => {
+      const [owner] = await db
+        .update(owners)
+        .set({ name, updated_at: sql`now()` })
+        .where(eq(owners.id, sql`current_setting('app.owner_id')::uuid`))
+        .returning({ name: owners.name, updated_at: owners.updated_at })
+      return owner
+    },
+    async () => {
+      const [owner] = await db
+        .select({ name: owners.name })
+        .from(owners)
+        .where(eq(owners.id, sql`current_setting('app.owner_id')::uuid`))
+      return owner
+    },
   ),
 }
 

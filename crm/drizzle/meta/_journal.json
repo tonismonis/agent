@@ -50,6 +50,13 @@
       "when": 1785720593602,
       "tag": "0006_owner_context",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785721200000,
+      "tag": "0007_owner_name_tool",
+      "breakpoints": true
     }
   ]
 }
