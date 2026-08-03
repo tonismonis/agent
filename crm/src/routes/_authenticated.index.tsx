@@ -1,7 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
+import {
+  getDailyThreadId,
+  millisecondsUntilThreadRotation,
+} from '#/lib/chat-thread'
+import { CHAT_MODEL } from '#/lib/inference-config'
 import type { UIMessage } from '@tanstack/ai-react'
 
 type CodeModeEvent = {
@@ -99,6 +104,7 @@ function InstrumentationCall({
 
 function Home() {
   const [input, setInput] = useState('')
+  const [threadId, setThreadId] = useState(() => getDailyThreadId())
   const [eventsByCall, setEventsByCall] = useState<
     Map<string, Array<CodeModeEvent>>
   >(new Map())
@@ -107,6 +113,13 @@ function Home() {
   const messageEnd = useRef<HTMLDivElement>(null)
   const instrumentationScroll = useRef<HTMLElement>(null)
   const instrumentationEnd = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setThreadId(getDailyThreadId())
+    }, millisecondsUntilThreadRotation())
+    return () => window.clearTimeout(timeout)
+  }, [threadId])
 
   const scrollIfPinned = useCallback(
     (
@@ -153,7 +166,9 @@ function Home() {
   )
 
   const { messages, sendMessage, isLoading, error, status } = useChat({
+    threadId,
     connection: fetchServerSentEvents('/api/chat'),
+    persistence: true,
     onChunk: (chunk) => {
       if (chunk.type === 'TEXT_MESSAGE_CONTENT') scrollMessages()
       if (chunk.type.startsWith('TOOL_CALL_')) scrollInstrumentation()
@@ -180,7 +195,7 @@ function Home() {
     <main className="flex h-screen flex-col bg-white text-zinc-950">
       <header className="flex h-9 shrink-0 items-center justify-between border-b border-zinc-300 px-4 font-mono text-xs">
         <strong>CRM agent probe</strong>
-        <span>model: CHAT_MODEL env</span>
+        <span>model: {CHAT_MODEL}</span>
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">

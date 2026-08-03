@@ -1,0 +1,18 @@
+{
+  "name": "@tanstack/ai-react",
+  "version": "0.18.1-git.6feb5644a38073c5865f7b4ff4d64d62195e755b",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mcp-apps": "./src/mcp-apps.ts"
+  },
+  "dependencies": {
+    "@tanstack/ai-client": "file:../ai-client"
+  },
+  "peerDependencies": {
+    "@tanstack/ai": "0.42.0",
+    "@types/react": ">=18.0.0",
+    "react": ">=18.0.0"
+  }
+}

@@ -2,13 +2,16 @@ import { sql } from 'drizzle-orm'
 import {
   boolean,
   check,
+  bigint,
   foreignKey,
+  index,
   integer,
   jsonb,
   pgEnum,
   pgPolicy,
   pgRole,
   pgTable,
+  primaryKey,
   serial,
   text,
   time,
@@ -16,6 +19,9 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core'
+
+import type { ModelMessage, TokenUsage } from '@tanstack/ai'
+import type { RunStatus } from '@tanstack/ai-persistence'
 
 export const appRole = pgRole('crm_app', {
   createDb: false,
@@ -69,6 +75,45 @@ export const audit_log = pgTable(
       to: appRole,
       withCheck: sql`owner_id = current_setting('app.owner_id')::uuid`,
     }),
+  ],
+).enableRLS()
+
+export const messages = pgTable(
+  'messages',
+  {
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    thread_id: text().notNull(),
+    messages_json: jsonb().$type<Array<ModelMessage>>().notNull(),
+    updated_at: bigint({ mode: 'number' }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.owner_id, table.thread_id] }),
+    ownerPolicy(),
+  ],
+).enableRLS()
+
+export const runs = pgTable(
+  'runs',
+  {
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    run_id: text().notNull(),
+    thread_id: text().notNull(),
+    status: text().$type<RunStatus>().notNull(),
+    started_at: bigint({ mode: 'number' }).notNull(),
+    finished_at: bigint({ mode: 'number' }),
+    error: text(),
+    usage_json: jsonb().$type<TokenUsage>(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.owner_id, table.run_id] }),
+    index('runs_owner_started_at_idx').on(table.owner_id, table.started_at),
+    ownerPolicy(),
   ],
 ).enableRLS()
 
