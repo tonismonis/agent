@@ -12,7 +12,7 @@ type CodeModeEvent = {
 
 type ToolCallPart = Extract<UIMessage['parts'][number], { type: 'tool-call' }>
 
-export const Route = createFileRoute('/')({ component: Home })
+export const Route = createFileRoute('/_authenticated/')({ component: Home })
 
 function formatValue(value: unknown) {
   if (typeof value === 'string') return value

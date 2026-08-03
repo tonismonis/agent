@@ -24,152 +24,52 @@ import {
   updateService,
 } from '#/lib/tools'
 
-export const createClientTool = toolDefinition({
-  name: createClient.name,
-  description: createClient.description,
-  inputSchema: createClient.inputSchema,
-}).server((input) => createClient.execute(input))
+import type { z } from 'zod'
 
-export const findClientsTool = toolDefinition({
-  name: findClients.name,
-  description: findClients.description,
-  inputSchema: findClients.inputSchema,
-}).server((input) => findClients.execute(input))
+type ToolRunner = <T>(operation: () => Promise<T>) => Promise<T>
 
-export const updateClientTool = toolDefinition({
-  name: updateClient.name,
-  description: updateClient.description,
-  inputSchema: updateClient.inputSchema,
-}).server((input) => updateClient.execute(input))
+type CrmTool<TSchema extends z.ZodType, TResult> = {
+  name: string
+  description: string
+  inputSchema: TSchema
+  execute: (input: z.input<TSchema>) => Promise<TResult>
+}
 
-export const softDeleteClientTool = toolDefinition({
-  name: softDeleteClient.name,
-  description: softDeleteClient.description,
-  inputSchema: softDeleteClient.inputSchema,
-}).server((input) => softDeleteClient.execute(input))
+function bindTool<TSchema extends z.ZodType, TResult>(
+  tool: CrmTool<TSchema, TResult>,
+  run: ToolRunner,
+) {
+  return toolDefinition({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+  }).server((input) => run(() => tool.execute(input)))
+}
 
-export const restoreClientTool = toolDefinition({
-  name: restoreClient.name,
-  description: restoreClient.description,
-  inputSchema: restoreClient.inputSchema,
-}).server((input) => restoreClient.execute(input))
+export function createChatTools(run: ToolRunner) {
+  return [
+    bindTool(createClient, run),
+    bindTool(findClients, run),
+    bindTool(updateClient, run),
+    bindTool(softDeleteClient, run),
+    bindTool(restoreClient, run),
+    bindTool(createService, run),
+    bindTool(findServices, run),
+    bindTool(updateService, run),
+    bindTool(softDeleteService, run),
+    bindTool(restoreService, run),
+    bindTool(createAppointment, run),
+    bindTool(findAppointments, run),
+    bindTool(updateAppointment, run),
+    bindTool(softDeleteAppointment, run),
+    bindTool(restoreAppointment, run),
+    bindTool(createPayment, run),
+    bindTool(findPayments, run),
+    bindTool(updatePayment, run),
+    bindTool(softDeletePayment, run),
+    bindTool(restorePayment, run),
+    bindTool(listAuditLog, run),
+  ]
+}
 
-export const createServiceTool = toolDefinition({
-  name: createService.name,
-  description: createService.description,
-  inputSchema: createService.inputSchema,
-}).server((input) => createService.execute(input))
-
-export const findServicesTool = toolDefinition({
-  name: findServices.name,
-  description: findServices.description,
-  inputSchema: findServices.inputSchema,
-}).server((input) => findServices.execute(input))
-
-export const updateServiceTool = toolDefinition({
-  name: updateService.name,
-  description: updateService.description,
-  inputSchema: updateService.inputSchema,
-}).server((input) => updateService.execute(input))
-
-export const softDeleteServiceTool = toolDefinition({
-  name: softDeleteService.name,
-  description: softDeleteService.description,
-  inputSchema: softDeleteService.inputSchema,
-}).server((input) => softDeleteService.execute(input))
-
-export const restoreServiceTool = toolDefinition({
-  name: restoreService.name,
-  description: restoreService.description,
-  inputSchema: restoreService.inputSchema,
-}).server((input) => restoreService.execute(input))
-
-export const createAppointmentTool = toolDefinition({
-  name: createAppointment.name,
-  description: createAppointment.description,
-  inputSchema: createAppointment.inputSchema,
-}).server((input) => createAppointment.execute(input))
-
-export const findAppointmentsTool = toolDefinition({
-  name: findAppointments.name,
-  description: findAppointments.description,
-  inputSchema: findAppointments.inputSchema,
-}).server((input) => findAppointments.execute(input))
-
-export const updateAppointmentTool = toolDefinition({
-  name: updateAppointment.name,
-  description: updateAppointment.description,
-  inputSchema: updateAppointment.inputSchema,
-}).server((input) => updateAppointment.execute(input))
-
-export const softDeleteAppointmentTool = toolDefinition({
-  name: softDeleteAppointment.name,
-  description: softDeleteAppointment.description,
-  inputSchema: softDeleteAppointment.inputSchema,
-}).server((input) => softDeleteAppointment.execute(input))
-
-export const restoreAppointmentTool = toolDefinition({
-  name: restoreAppointment.name,
-  description: restoreAppointment.description,
-  inputSchema: restoreAppointment.inputSchema,
-}).server((input) => restoreAppointment.execute(input))
-
-export const createPaymentTool = toolDefinition({
-  name: createPayment.name,
-  description: createPayment.description,
-  inputSchema: createPayment.inputSchema,
-}).server((input) => createPayment.execute(input))
-
-export const findPaymentsTool = toolDefinition({
-  name: findPayments.name,
-  description: findPayments.description,
-  inputSchema: findPayments.inputSchema,
-}).server((input) => findPayments.execute(input))
-
-export const updatePaymentTool = toolDefinition({
-  name: updatePayment.name,
-  description: updatePayment.description,
-  inputSchema: updatePayment.inputSchema,
-}).server((input) => updatePayment.execute(input))
-
-export const softDeletePaymentTool = toolDefinition({
-  name: softDeletePayment.name,
-  description: softDeletePayment.description,
-  inputSchema: softDeletePayment.inputSchema,
-}).server((input) => softDeletePayment.execute(input))
-
-export const restorePaymentTool = toolDefinition({
-  name: restorePayment.name,
-  description: restorePayment.description,
-  inputSchema: restorePayment.inputSchema,
-}).server((input) => restorePayment.execute(input))
-
-export const listAuditLogTool = toolDefinition({
-  name: listAuditLog.name,
-  description: listAuditLog.description,
-  inputSchema: listAuditLog.inputSchema,
-}).server((input) => listAuditLog.execute(input))
-
-export const chatTools = [
-  createClientTool,
-  findClientsTool,
-  updateClientTool,
-  softDeleteClientTool,
-  restoreClientTool,
-  createServiceTool,
-  findServicesTool,
-  updateServiceTool,
-  softDeleteServiceTool,
-  restoreServiceTool,
-  createAppointmentTool,
-  findAppointmentsTool,
-  updateAppointmentTool,
-  softDeleteAppointmentTool,
-  restoreAppointmentTool,
-  createPaymentTool,
-  findPaymentsTool,
-  updatePaymentTool,
-  softDeletePaymentTool,
-  restorePaymentTool,
-  listAuditLogTool,
-]
+export const chatTools = createChatTools((operation) => operation())

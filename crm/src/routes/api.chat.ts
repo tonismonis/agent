@@ -8,18 +8,23 @@ import { createNodeIsolateDriver } from '@tanstack/ai-isolate-node'
 import { openRouterText } from '@tanstack/ai-openrouter'
 import { createFileRoute } from '@tanstack/react-router'
 
-import { chatTools } from '#/lib/chat-tools'
+import { createChatTools } from '#/lib/chat-tools'
+import { requireVerifiedOwner, withOwnerTxn } from '#/lib/owner-context'
 import { buildAppPrompt } from '#/lib/system-prompt'
 
 export const Route = createFileRoute('/api/chat')({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        const owner = await requireVerifiedOwner()
         const { messages } = await request.json()
         const abortController = new AbortController()
+        const ownerTools = createChatTools((operation) =>
+          withOwnerTxn(owner.id, () => operation()),
+        )
         const { tool, systemPrompt } = createCodeMode({
           driver: createNodeIsolateDriver(),
-          tools: chatTools,
+          tools: ownerTools,
         })
 
         const model = (process.env.CHAT_MODEL ??

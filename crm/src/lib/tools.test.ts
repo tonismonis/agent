@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import { aroundEach, beforeAll, beforeEach, expect, test } from 'vitest'
 import { z } from 'zod'
 
-import { db, withOwnerTransaction } from '#/db'
+import { db, withOwnerTxn } from '#/db'
 import { chatTools } from './chat-tools'
 import {
   appointments,
@@ -73,7 +73,7 @@ beforeEach(async () => {
   await adminDb.delete(working_hours)
 })
 
-aroundEach((runTest) => withOwnerTransaction(ownerA, runTest))
+aroundEach((runTest) => withOwnerTxn(ownerA, runTest))
 
 test('chat registers restore and audit tools', () => {
   expect(chatTools.map((tool) => tool.name)).toEqual(
@@ -148,7 +148,7 @@ test('createClient then findClients returns the created client', async () => {
 
 test('owner cannot read another owner client via tools', async () => {
   await createClient.execute({ name: 'Alice Client' })
-  await withOwnerTransaction(ownerB, () =>
+  await withOwnerTxn(ownerB, () =>
     createClient.execute({ name: 'Bob Client' }),
   )
 
@@ -158,7 +158,7 @@ test('owner cannot read another owner client via tools', async () => {
 })
 
 test('owner cannot update another owner client via tools', async () => {
-  const bobClient = await withOwnerTransaction(ownerB, () =>
+  const bobClient = await withOwnerTxn(ownerB, () =>
     createClient.execute({ name: 'Bob Client' }),
   )
 
@@ -166,7 +166,7 @@ test('owner cannot update another owner client via tools', async () => {
     await updateClient.execute({ id: bobClient.id, name: 'Stolen' }),
   ).toBeUndefined()
   expect(
-    await withOwnerTransaction(ownerB, () => findClients.execute({})),
+    await withOwnerTxn(ownerB, () => findClients.execute({})),
   ).toEqual([
     expect.objectContaining({ id: bobClient.id, name: 'Bob Client' }),
   ])

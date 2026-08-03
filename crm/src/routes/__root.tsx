@@ -1,3 +1,4 @@
+import { ClerkProvider } from '@clerk/tanstack-react-start'
 import {
   HeadContent,
   Scripts,
@@ -47,7 +48,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <HeadContent />
       </head>
       <body>
-        {children}
+        <ClerkProvider>{children}</ClerkProvider>
         <TanStackDevtools
           config={{
             position: 'bottom-right',
