@@ -1,49 +1,122 @@
+import { sql } from 'drizzle-orm'
 import {
   boolean,
+  check,
+  foreignKey,
   integer,
   jsonb,
   pgEnum,
+  pgPolicy,
+  pgRole,
   pgTable,
   serial,
   text,
+  time,
   timestamp,
+  unique,
+  uuid,
 } from 'drizzle-orm/pg-core'
 
-export const audit_log = pgTable('audit_log', {
-  id: serial().primaryKey(),
-  tool_name: text().notNull(),
-  input: jsonb().notNull(),
-  entity: text().notNull(),
-  entity_id: integer(),
-  before: jsonb(),
-  ok: boolean().notNull(),
-  error: text(),
-  ts: timestamp({ withTimezone: true }).defaultNow(),
+export const appRole = pgRole('crm_app', {
+  createDb: false,
+  createRole: false,
+  inherit: false,
 })
+
+const ownerPolicy = () =>
+  pgPolicy('owner_isolation', {
+    to: appRole,
+    using: sql`owner_id = current_setting('app.owner_id')::uuid`,
+    withCheck: sql`owner_id = current_setting('app.owner_id')::uuid`,
+  })
+
+export const owners = pgTable('owners', {
+  id: uuid().defaultRandom().primaryKey(),
+  external_id: text().unique(),
+  email: text().notNull().unique(),
+  name: text().notNull(),
+  profession: text().notNull(),
+  restricted_notes: boolean().notNull().default(false),
+  created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+})
+
+export const audit_log = pgTable(
+  'audit_log',
+  {
+    id: serial().primaryKey(),
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    tool_name: text().notNull(),
+    input: jsonb().notNull(),
+    entity: text().notNull(),
+    entity_id: integer(),
+    before: jsonb(),
+    ok: boolean().notNull(),
+    error: text(),
+    ts: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  () => [
+    pgPolicy('owner_select', {
+      for: 'select',
+      to: appRole,
+      using: sql`owner_id = current_setting('app.owner_id')::uuid`,
+    }),
+    pgPolicy('owner_insert', {
+      for: 'insert',
+      to: appRole,
+      withCheck: sql`owner_id = current_setting('app.owner_id')::uuid`,
+    }),
+  ],
+).enableRLS()
 
 export const serviceUnit = pgEnum('service_unit', ['hour', 'flat'])
 
-export const services = pgTable('services', {
-  id: serial().primaryKey(),
-  name: text().notNull(),
-  price: integer().notNull(),
-  unit: serviceUnit().notNull(),
-  duration_minutes: integer(),
-  created_at: timestamp({ withTimezone: true }).defaultNow(),
-  updated_at: timestamp({ withTimezone: true }).defaultNow(),
-  deleted_at: timestamp({ withTimezone: true }),
-})
+export const services = pgTable(
+  'services',
+  {
+    id: serial().primaryKey(),
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    name: text().notNull(),
+    price: integer().notNull(),
+    unit: serviceUnit().notNull(),
+    duration_minutes: integer(),
+    created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    deleted_at: timestamp({ withTimezone: true }),
+  },
+  (table) => [
+    unique('services_id_owner_id_unique').on(table.id, table.owner_id),
+    ownerPolicy(),
+  ],
+).enableRLS()
 
-export const clients = pgTable('clients', {
-  id: serial().primaryKey(),
-  name: text().notNull(),
-  email: text(),
-  phone: text(),
-  notes: text(),
-  created_at: timestamp({ withTimezone: true }).defaultNow(),
-  updated_at: timestamp({ withTimezone: true }).defaultNow(),
-  deleted_at: timestamp({ withTimezone: true }),
-})
+export const clients = pgTable(
+  'clients',
+  {
+    id: serial().primaryKey(),
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    name: text().notNull(),
+    email: text(),
+    phone: text(),
+    notes: text(),
+    created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    deleted_at: timestamp({ withTimezone: true }),
+  },
+  (table) => [
+    unique('clients_id_owner_id_unique').on(table.id, table.owner_id),
+    ownerPolicy(),
+  ],
+).enableRLS()
 
 export const appointmentMode = pgEnum('appointment_mode', [
   'online',
@@ -57,36 +130,91 @@ export const appointmentStatus = pgEnum('appointment_status', [
   'no_show',
 ])
 
-export const appointments = pgTable('appointments', {
-  id: serial().primaryKey(),
-  client_id: integer()
-    .notNull()
-    .references(() => clients.id),
-  service_id: integer()
-    .notNull()
-    .references(() => services.id),
-  starts_at: timestamp({ withTimezone: true }).notNull(),
-  ends_at: timestamp({ withTimezone: true }).notNull(),
-  mode: appointmentMode().notNull(),
-  status: appointmentStatus().notNull().default('scheduled'),
-  // price snapshot at booking; services.price may change later
-  price: integer().notNull(),
-  notes: text(),
-  created_at: timestamp({ withTimezone: true }).defaultNow(),
-  updated_at: timestamp({ withTimezone: true }).defaultNow(),
-  deleted_at: timestamp({ withTimezone: true }),
-})
+export const appointments = pgTable(
+  'appointments',
+  {
+    id: serial().primaryKey(),
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    client_id: integer().notNull(),
+    service_id: integer().notNull(),
+    starts_at: timestamp({ withTimezone: true }).notNull(),
+    ends_at: timestamp({ withTimezone: true }).notNull(),
+    mode: appointmentMode().notNull(),
+    status: appointmentStatus().notNull().default('scheduled'),
+    // Price snapshot at creation; Services.price may change later.
+    price: integer().notNull(),
+    notes: text(),
+    created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    deleted_at: timestamp({ withTimezone: true }),
+  },
+  (table) => [
+    unique('appointments_id_owner_id_unique').on(table.id, table.owner_id),
+    foreignKey({
+      name: 'appointments_client_owner_fk',
+      columns: [table.client_id, table.owner_id],
+      foreignColumns: [clients.id, clients.owner_id],
+    }),
+    foreignKey({
+      name: 'appointments_service_owner_fk',
+      columns: [table.service_id, table.owner_id],
+      foreignColumns: [services.id, services.owner_id],
+    }),
+    ownerPolicy(),
+  ],
+).enableRLS()
 
-export const payments = pgTable('payments', {
-  id: serial().primaryKey(),
-  client_id: integer()
-    .notNull()
-    .references(() => clients.id),
-  appointment_id: integer().references(() => appointments.id),
-  amount: integer().notNull(),
-  paid_at: timestamp({ withTimezone: true }).notNull(),
-  notes: text(),
-  created_at: timestamp({ withTimezone: true }).defaultNow(),
-  updated_at: timestamp({ withTimezone: true }).defaultNow(),
-  deleted_at: timestamp({ withTimezone: true }),
-})
+export const payments = pgTable(
+  'payments',
+  {
+    id: serial().primaryKey(),
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    client_id: integer().notNull(),
+    appointment_id: integer(),
+    amount: integer().notNull(),
+    paid_at: timestamp({ withTimezone: true }).notNull(),
+    notes: text(),
+    created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    deleted_at: timestamp({ withTimezone: true }),
+  },
+  (table) => [
+    unique('payments_id_owner_id_unique').on(table.id, table.owner_id),
+    foreignKey({
+      name: 'payments_client_owner_fk',
+      columns: [table.client_id, table.owner_id],
+      foreignColumns: [clients.id, clients.owner_id],
+    }),
+    foreignKey({
+      name: 'payments_appointment_owner_fk',
+      columns: [table.appointment_id, table.owner_id],
+      foreignColumns: [appointments.id, appointments.owner_id],
+    }),
+    ownerPolicy(),
+  ],
+).enableRLS()
+
+export const working_hours = pgTable(
+  'working_hours',
+  {
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    weekday: integer().notNull(),
+    start_time: time().notNull(),
+    end_time: time().notNull(),
+  },
+  (table) => [
+    check('working_hours_weekday_check', sql`${table.weekday} between 0 and 6`),
+    check('working_hours_time_check', sql`${table.start_time} < ${table.end_time}`),
+    // Drizzle has no exclusion-constraint builder; migration adds working_hours_no_overlap.
+    ownerPolicy(),
+  ],
+).enableRLS()

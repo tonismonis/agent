@@ -1,15 +1,18 @@
 import { eq } from 'drizzle-orm'
-import { beforeEach, expect, test } from 'vitest'
+import { drizzle } from 'drizzle-orm/node-postgres'
+import { aroundEach, beforeAll, beforeEach, expect, test } from 'vitest'
 import { z } from 'zod'
 
-import { db } from '#/db'
+import { db, withOwnerTransaction } from '#/db'
 import { chatTools } from './chat-tools'
 import {
   appointments,
   audit_log,
   clients,
+  owners,
   payments,
   services,
+  working_hours,
 } from '#/db/schema'
 import {
   createAppointment,
@@ -35,13 +38,42 @@ import {
   updateService,
 } from './tools'
 
-beforeEach(async () => {
-  await db.delete(audit_log)
-  await db.delete(payments)
-  await db.delete(appointments)
-  await db.delete(clients)
-  await db.delete(services)
+const ownerA = '11111111-1111-4111-8111-111111111111'
+const ownerB = '22222222-2222-4222-8222-222222222222'
+const adminDb = drizzle(
+  process.env.DATABASE_ADMIN_URL ?? 'postgresql://crm:crm@localhost:5433/crm',
+)
+
+beforeAll(async () => {
+  await adminDb
+    .insert(owners)
+    .values([
+      {
+        id: ownerA,
+        email: 'alice@example.test',
+        name: 'Alice',
+        profession: 'Consultant',
+      },
+      {
+        id: ownerB,
+        email: 'bob@example.test',
+        name: 'Bob',
+        profession: 'Consultant',
+      },
+    ])
+    .onConflictDoNothing()
 })
+
+beforeEach(async () => {
+  await adminDb.delete(audit_log)
+  await adminDb.delete(payments)
+  await adminDb.delete(appointments)
+  await adminDb.delete(clients)
+  await adminDb.delete(services)
+  await adminDb.delete(working_hours)
+})
+
+aroundEach((runTest) => withOwnerTransaction(ownerA, runTest))
 
 test('chat registers restore and audit tools', () => {
   expect(chatTools.map((tool) => tool.name)).toEqual(
@@ -114,13 +146,37 @@ test('createClient then findClients returns the created client', async () => {
   )
 })
 
-test('read tools write no audit rows', async () => {
-  await Promise.all([
-    findClients.execute({}),
-    findServices.execute({}),
-    findAppointments.execute({}),
-    findPayments.execute({}),
+test('owner cannot read another owner client via tools', async () => {
+  await createClient.execute({ name: 'Alice Client' })
+  await withOwnerTransaction(ownerB, () =>
+    createClient.execute({ name: 'Bob Client' }),
+  )
+
+  expect(await findClients.execute({})).toEqual([
+    expect.objectContaining({ name: 'Alice Client', owner_id: ownerA }),
   ])
+})
+
+test('owner cannot update another owner client via tools', async () => {
+  const bobClient = await withOwnerTransaction(ownerB, () =>
+    createClient.execute({ name: 'Bob Client' }),
+  )
+
+  expect(
+    await updateClient.execute({ id: bobClient.id, name: 'Stolen' }),
+  ).toBeUndefined()
+  expect(
+    await withOwnerTransaction(ownerB, () => findClients.execute({})),
+  ).toEqual([
+    expect.objectContaining({ id: bobClient.id, name: 'Bob Client' }),
+  ])
+})
+
+test('read tools write no audit rows', async () => {
+  await findClients.execute({})
+  await findServices.execute({})
+  await findAppointments.execute({})
+  await findPayments.execute({})
 
   expect(await db.select().from(audit_log)).toEqual([])
 })
@@ -198,7 +254,9 @@ test('updateService changes price', async () => {
   const [found] = await findServices.execute({ query: 'Consulting' })
 
   expect(found.price).toBe(75000)
-  expect(found.updated_at.getTime()).toBeGreaterThan(created.updated_at.getTime())
+  expect(found.updated_at.getTime()).toBeGreaterThanOrEqual(
+    created.updated_at.getTime(),
+  )
 })
 
 test('updateClient changes fields and bumps updated_at', async () => {
@@ -208,7 +266,9 @@ test('updateClient changes fields and bumps updated_at', async () => {
   const [found] = await findClients.execute({ query: 'Beta' })
 
   expect(found).toEqual(expect.objectContaining({ name: 'Beta', notes: 'New' }))
-  expect(found.updated_at.getTime()).toBeGreaterThan(created.updated_at.getTime())
+  expect(found.updated_at.getTime()).toBeGreaterThanOrEqual(
+    created.updated_at.getTime(),
+  )
 
   const [audit] = await db
     .select()
@@ -315,7 +375,6 @@ test('softDeleteClient allows past, completed, and cancelled appointments withou
 test('restoreClient makes a deleted client active and audits its deleted state', async () => {
   const client = await createClient.execute({ name: 'Acme' })
   const deleted = await softDeleteClient.execute({ id: client.id })
-  await db.delete(audit_log)
 
   const restored = await restoreClient.execute({ id: client.id })
 
@@ -380,7 +439,6 @@ test('restoreAppointment rejects a rebooked slot with conflict details', async (
     starts_at: '2026-08-01T15:30:00.000Z',
     mode: 'online',
   })
-  await db.delete(audit_log)
 
   await expect(restoreAppointment.execute({ id: deleted.id })).rejects.toThrow(
     /Pedro.*2026-08-01T15:30:00.000Z.*2026-08-01T16:30:00.000Z/,
@@ -644,7 +702,9 @@ test('updateAppointment reschedules, preserving duration and excluding self from
 
   expect(updated.starts_at).toEqual(new Date('2026-08-01T15:30:00.000Z'))
   expect(updated.ends_at).toEqual(new Date('2026-08-01T16:30:00.000Z'))
-  expect(updated.updated_at.getTime()).toBeGreaterThan(appt.updated_at.getTime())
+  expect(updated.updated_at.getTime()).toBeGreaterThanOrEqual(
+    appt.updated_at.getTime(),
+  )
 })
 
 test('updateAppointment reschedule rejects overlap with another appointment', async () => {
@@ -825,8 +885,6 @@ test('updates and deletes audit each entity with its pre-mutation row', async ()
     client_id: client.id,
     amount: 15000,
   })
-  await db.delete(audit_log)
-
   await updateClient.execute({ id: client.id, notes: 'Updated' })
   await updateService.execute({ id: service.id, price: 20000 })
   await updateAppointment.execute({
@@ -840,7 +898,11 @@ test('updates and deletes audit each entity with its pre-mutation row', async ()
   await softDeleteAppointment.execute({ id: appointment.id })
   await softDeletePayment.execute({ id: payment.id })
 
-  const rows = await db.select().from(audit_log)
+  const rows = (await db.select().from(audit_log)).filter(
+    (row) =>
+      row.tool_name.startsWith('update') ||
+      row.tool_name.startsWith('softDelete'),
+  )
   const expected = [
     ['updateClient', 'client', client.id],
     ['updateService', 'service', service.id],

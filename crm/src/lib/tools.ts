@@ -569,7 +569,13 @@ async function assertNoOverlap(
       client_name: clients.name,
     })
     .from(appointments)
-    .innerJoin(clients, eq(appointments.client_id, clients.id))
+    .innerJoin(
+      clients,
+      and(
+        eq(appointments.client_id, clients.id),
+        eq(appointments.owner_id, clients.owner_id),
+      ),
+    )
     .where(
       and(
         eq(appointments.status, 'scheduled'),
