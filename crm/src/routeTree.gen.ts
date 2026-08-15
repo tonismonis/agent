@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated.index'
+import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
 import { Route as ApiChatRouteImport } from './routes/api.chat'
 
 const SignInRoute = SignInRouteImport.update({
@@ -28,6 +29,11 @@ const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const SignInSplatRoute = SignInSplatRouteImport.update({
+  id: '/$',
+  path: '/$',
+  getParentRoute: () => SignInRoute,
+} as any)
 const ApiChatRoute = ApiChatRouteImport.update({
   id: '/api/chat',
   path: '/api/chat',
@@ -36,37 +42,41 @@ const ApiChatRoute = ApiChatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
-  '/sign-in': typeof SignInRoute
+  '/sign-in': typeof SignInRouteWithChildren
   '/api/chat': typeof ApiChatRoute
+  '/sign-in/$': typeof SignInSplatRoute
 }
 export interface FileRoutesByTo {
-  '/sign-in': typeof SignInRoute
+  '/sign-in': typeof SignInRouteWithChildren
   '/api/chat': typeof ApiChatRoute
+  '/sign-in/$': typeof SignInSplatRoute
   '/': typeof AuthenticatedIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authenticated': typeof AuthenticatedRouteWithChildren
-  '/sign-in': typeof SignInRoute
+  '/sign-in': typeof SignInRouteWithChildren
   '/api/chat': typeof ApiChatRoute
+  '/sign-in/$': typeof SignInSplatRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/sign-in' | '/api/chat'
+  fullPaths: '/' | '/sign-in' | '/api/chat' | '/sign-in/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/sign-in' | '/api/chat' | '/'
+  to: '/sign-in' | '/api/chat' | '/sign-in/$' | '/'
   id:
     | '__root__'
     | '/_authenticated'
     | '/sign-in'
     | '/api/chat'
+    | '/sign-in/$'
     | '/_authenticated/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
-  SignInRoute: typeof SignInRoute
+  SignInRoute: typeof SignInRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
 }
 
@@ -93,6 +103,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedIndexRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/sign-in/$': {
+      id: '/sign-in/$'
+      path: '/$'
+      fullPath: '/sign-in/$'
+      preLoaderRoute: typeof SignInSplatRouteImport
+      parentRoute: typeof SignInRoute
+    }
     '/api/chat': {
       id: '/api/chat'
       path: '/api/chat'
@@ -115,9 +132,20 @@ const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
   AuthenticatedRouteChildren,
 )
 
+interface SignInRouteChildren {
+  SignInSplatRoute: typeof SignInSplatRoute
+}
+
+const SignInRouteChildren: SignInRouteChildren = {
+  SignInSplatRoute: SignInSplatRoute,
+}
+
+const SignInRouteWithChildren =
+  SignInRoute._addFileChildren(SignInRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
-  SignInRoute: SignInRoute,
+  SignInRoute: SignInRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
 }
 export const routeTree = rootRouteImport
