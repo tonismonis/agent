@@ -46,7 +46,7 @@ function bindTool<TSchema extends z.ZodType, TResult>(
     name: tool.name,
     description: tool.description,
     inputSchema: tool.inputSchema,
-  }).server((input) => run(() => tool.execute(input)))
+  }).server((input) => run(() => tool.execute(input as z.input<TSchema>)))
 }
 
 export function createChatTools(run: ToolRunner) {

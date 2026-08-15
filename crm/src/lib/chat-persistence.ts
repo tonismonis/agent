@@ -16,7 +16,7 @@ function mapRun(row: typeof runs.$inferSelect): RunRecord {
     status: row.status,
     startedAt: row.started_at,
     ...(row.finished_at != null ? { finishedAt: row.finished_at } : {}),
-    ...(row.error != null ? { error: row.error } : {}),
+    ...(row.error != null ? { error: { message: row.error } } : {}),
     ...(row.usage_json != null ? { usage: row.usage_json } : {}),
   }
 }
@@ -108,7 +108,7 @@ export function createOwnerChatPersistence(ownerId: string) {
             if (patch.finishedAt !== undefined) {
               values.finished_at = patch.finishedAt
             }
-            if (patch.error !== undefined) values.error = patch.error
+            if (patch.error !== undefined) values.error = patch.error.message
             if (patch.usage !== undefined) values.usage_json = patch.usage
             if (Object.keys(values).length === 0) return
             await db.update(runs).set(values).where(eq(runs.run_id, runId))

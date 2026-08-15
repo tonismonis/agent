@@ -1,8 +1,0 @@
-{
-  "name": "@tanstack/ai-event-client",
-  "version": "0.6.8",
-  "private": true,
-  "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "dependencies": { "@tanstack/devtools-event-client": "0.4.1" }
-}
