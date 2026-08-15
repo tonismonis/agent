@@ -72,8 +72,8 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild",
-      "lightningcss"
+      "isolated-vm",
+      "@openrouter/sdk"
     ]
   }
 }
