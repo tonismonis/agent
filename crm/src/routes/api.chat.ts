@@ -2,7 +2,6 @@ import { chatParamsFromRequest } from '@tanstack/ai'
 import { createFileRoute } from '@tanstack/react-router'
 
 import { replayOrHydrateChat, streamChatTurn } from '#/lib/chat-run'
-import { getDailyThreadId } from '#/lib/chat-thread'
 import { enforceOwnerInferenceCap } from '#/lib/inference-usage'
 import { requireVerifiedOwner } from '#/lib/owner-context'
 
@@ -11,7 +10,7 @@ export const Route = createFileRoute('/api/chat')({
     handlers: {
       GET: async ({ request }) => {
         const owner = await requireVerifiedOwner()
-        return replayOrHydrateChat(owner.id, request, getDailyThreadId())
+        return replayOrHydrateChat(owner.id, request, new Date())
       },
       POST: async ({ request }) => {
         const owner = await requireVerifiedOwner()

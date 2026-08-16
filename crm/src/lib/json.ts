@@ -41,13 +41,3 @@ export function isJsonNumber(value: JsonValue | undefined): value is number {
 export function isJsonBoolean(value: JsonValue | undefined): value is boolean {
   return typeof value === 'boolean'
 }
-
-/** Decodes JSON text, or `undefined` when the text is not JSON. */
-export function parseJson(text: string): JsonValue | undefined {
-  try {
-    // SAFETY: JSON.parse returns exactly the value grammar JSON describes.
-    return JSON.parse(text) as JsonValue
-  } catch {
-    return undefined
-  }
-}

@@ -34,6 +34,35 @@ type ChatOwner = typeof owners.$inferSelect
 type ChatParams = Awaited<ReturnType<typeof chatParamsFromRequest>>
 type ChatPersistence = ReturnType<typeof createOwnerChatPersistence>
 
+const isolateDriver = createNodeIsolateDriver()
+const THREAD_ROTATION_GRACE_MS = 5 * 60_000
+
+export function isValidClientThreadId(
+  clientThreadId: string | null | undefined,
+  now: Date,
+) {
+  if (clientThreadId == null) return true
+
+  return [-THREAD_ROTATION_GRACE_MS, 0, THREAD_ROTATION_GRACE_MS].some(
+    (offset) =>
+      clientThreadId === getDailyThreadId(new Date(now.getTime() + offset)),
+  )
+}
+
+function rejectRotatedThread() {
+  throw new Response(JSON.stringify({ error: 'thread rotated' }), {
+    status: 409,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+function validateClientThreadId(
+  clientThreadId: string | null | undefined,
+  now: Date,
+) {
+  if (!isValidClientThreadId(clientThreadId, now)) rejectRotatedThread()
+}
+
 /**
  * Runs whose producer is alive in this process. We deploy one instance, so the
  * delivery log (`memoryStream`, in-process) and this set share a run's
@@ -59,8 +88,8 @@ function startDetachedRun(owner: ChatOwner, params: ChatParams, now: Date) {
       const ownerTools = createChatTools((operation) =>
         withOwnerTxn(owner.id, () => operation()),
       )
-      const { tool, systemPrompt } = createCodeMode({
-        driver: createNodeIsolateDriver(),
+      const { tools, systemPrompt } = createCodeMode({
+        driver: isolateDriver,
         tools: ownerTools,
       })
       const stream = chat({
@@ -76,7 +105,7 @@ function startDetachedRun(owner: ChatOwner, params: ChatParams, now: Date) {
           }),
           systemPrompt,
         ],
-        tools: [tool],
+        tools: [...tools],
         agentLoopStrategy: maxIterations(5),
         messages: params.messages,
         threadId: getDailyThreadId(now),
@@ -119,6 +148,7 @@ export function streamChatTurn(
   params: ChatParams,
   now: Date,
 ) {
+  validateClientThreadId(params.threadId, now)
   startDetachedRun(owner, params, now)
   // This reader races the producer it just started, so it waits far longer for
   // a first chunk than a rejoin does, where an empty log means the run is gone.
@@ -155,8 +185,12 @@ async function abandonCrashedRun(
 export async function replayOrHydrateChat(
   ownerId: string,
   request: Request,
-  threadId: string,
+  now: Date,
 ) {
+  const requestedThreadId = new URL(request.url).searchParams.get('threadId')
+  validateClientThreadId(requestedThreadId, now)
+
+  const threadId = getDailyThreadId(now)
   const persistence = createOwnerChatPersistence(ownerId)
   const durability = memoryStream(request)
 

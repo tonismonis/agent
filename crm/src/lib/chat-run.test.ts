@@ -5,23 +5,55 @@ import { beforeAll, beforeEach, expect, test } from 'vitest'
 
 import { messages, owners, runs } from '#/db/schema'
 import { createOwnerChatPersistence } from './chat-persistence'
-import { replayOrHydrateChat } from './chat-run'
+import { isValidClientThreadId, replayOrHydrateChat } from './chat-run'
+import { getDailyThreadId } from './chat-thread'
 
 import type { StreamChunk } from '@tanstack/ai'
 
 const ownerId = '55555555-5555-4555-8555-555555555555'
 const otherOwnerId = '66666666-6666-4666-8666-666666666666'
-const threadId = 'day-2026-08-16'
+const now = new Date('2026-08-16T12:00:00Z')
+const threadId = getDailyThreadId(now)
 const adminDb = drizzle(
   process.env.DATABASE_ADMIN_URL ?? 'postgresql://crm:crm@localhost:5433/crm',
 )
 const persistence = createOwnerChatPersistence(ownerId)
 
+test('accepts the current daily thread', () => {
+  const now = new Date('2026-08-16T12:00:00Z')
+
+  expect(isValidClientThreadId(getDailyThreadId(now), now)).toBe(true)
+})
+
+test('accepts thread ids at the five-minute skew boundaries', () => {
+  const afterRotation = new Date('2026-08-16T04:03:00Z')
+  const beforeRotation = new Date('2026-08-17T03:57:00Z')
+
+  expect(
+    isValidClientThreadId(
+      getDailyThreadId(new Date(afterRotation.getTime() - 5 * 60_000)),
+      afterRotation,
+    ),
+  ).toBe(true)
+  expect(
+    isValidClientThreadId(
+      getDailyThreadId(new Date(beforeRotation.getTime() + 5 * 60_000)),
+      beforeRotation,
+    ),
+  ).toBe(true)
+})
+
+test('rejects a stale daily thread', () => {
+  const now = new Date('2026-08-16T12:00:00Z')
+
+  expect(isValidClientThreadId('day-2026-08-15', now)).toBe(false)
+})
+
 function get(query: string) {
   return replayOrHydrateChat(
     ownerId,
     new Request(`http://crm.test/api/chat?${query}`),
-    threadId,
+    now,
   )
 }
 

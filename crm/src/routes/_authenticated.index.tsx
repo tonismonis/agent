@@ -1,5 +1,6 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { parsePartialJSON } from '@tanstack/ai'
 import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
+import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
@@ -10,7 +11,6 @@ import {
   isJsonNumber,
   isJsonObject,
   isJsonString,
-  parseJson,
   type JsonValue,
 } from '#/lib/json'
 import {
@@ -60,7 +60,7 @@ function truncate(text: string, limit: number) {
 }
 
 function getTypeScript(argumentsText: string) {
-  const input = parseJson(argumentsText)
+  const input = parsePartialJSON(argumentsText)
   const code = isJsonObject(input) ? input.typescriptCode : undefined
   return isJsonString(code) ? code : argumentsText
 }
