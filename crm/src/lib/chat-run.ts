@@ -7,6 +7,7 @@
 import {
   EventType,
   chat,
+  chatParamsFromRequest,
   maxIterations,
   memoryStream,
   resolveResumeRunId,
@@ -27,7 +28,7 @@ import {
 import { withOwnerTxn } from '#/lib/owner-context'
 import { buildAppPrompt } from '#/lib/system-prompt'
 
-import type { StreamChunk, chatParamsFromRequest } from '@tanstack/ai'
+import type { StreamChunk } from '@tanstack/ai'
 import type { owners } from '#/db/schema'
 
 type ChatOwner = typeof owners.$inferSelect
@@ -36,6 +37,35 @@ type ChatPersistence = ReturnType<typeof createOwnerChatPersistence>
 
 const isolateDriver = createNodeIsolateDriver()
 const THREAD_ROTATION_GRACE_MS = 5 * 60_000
+
+class InvalidChatParamsError extends Error {}
+
+export async function parseChatParams(request: Request) {
+  try {
+    return await chatParamsFromRequest(request)
+  } catch {
+    throw new InvalidChatParamsError()
+  }
+}
+
+export async function handleChatRequest(
+  request: Request,
+  handler: () => Response | Promise<Response>,
+) {
+  if (request.signal.aborted) return new Response(null, { status: 499 })
+
+  try {
+    return await handler()
+  } catch (error) {
+    if (error instanceof Response) throw error
+    if (error instanceof InvalidChatParamsError) {
+      return Response.json({ error: 'Invalid request body' }, { status: 400 })
+    }
+    // The body stays generic; the detail belongs in the server log only.
+    console.error('chat request failed', error)
+    return Response.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
 
 export function isValidClientThreadId(
   clientThreadId: string | null | undefined,

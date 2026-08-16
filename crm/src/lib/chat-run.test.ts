@@ -5,7 +5,12 @@ import { beforeAll, beforeEach, expect, test } from 'vitest'
 
 import { messages, owners, runs } from '#/db/schema'
 import { createOwnerChatPersistence } from './chat-persistence'
-import { isValidClientThreadId, replayOrHydrateChat } from './chat-run'
+import {
+  handleChatRequest,
+  isValidClientThreadId,
+  parseChatParams,
+  replayOrHydrateChat,
+} from './chat-run'
 import { getDailyThreadId } from './chat-thread'
 
 import type { StreamChunk } from '@tanstack/ai'
@@ -18,6 +23,63 @@ const adminDb = drizzle(
   process.env.DATABASE_ADMIN_URL ?? 'postgresql://crm:crm@localhost:5433/crm',
 )
 const persistence = createOwnerChatPersistence(ownerId)
+
+test('chat request preserves thrown responses', async () => {
+  const refusal = Response.json({ error: 'forbidden' }, { status: 403 })
+
+  await expect(
+    handleChatRequest(new Request('http://crm.test/api/chat'), () => {
+      throw refusal
+    }),
+  ).rejects.toBe(refusal)
+})
+
+test('chat request hides unexpected errors', async () => {
+  const response = await handleChatRequest(
+    new Request('http://crm.test/api/chat'),
+    () => {
+      throw new Error('database credentials leaked')
+    },
+  )
+
+  expect(response.status).toBe(500)
+  expect(await response.json()).toEqual({ error: 'Internal server error' })
+})
+
+test('chat request returns early when already aborted', async () => {
+  const abortController = new AbortController()
+  abortController.abort()
+  let started = false
+
+  const response = await handleChatRequest(
+    new Request('http://crm.test/api/chat', {
+      signal: abortController.signal,
+    }),
+    () => {
+      started = true
+      return new Response()
+    },
+  )
+
+  expect(response.status).toBe(499)
+  expect(started).toBe(false)
+})
+
+test('malformed chat params return JSON 400', async () => {
+  const request = new Request('http://crm.test/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{',
+  })
+
+  const response = await handleChatRequest(request, async () => {
+    await parseChatParams(request)
+    return new Response()
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({ error: 'Invalid request body' })
+})
 
 test('accepts the current daily thread', () => {
   const now = new Date('2026-08-16T12:00:00Z')
