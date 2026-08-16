@@ -27,27 +27,51 @@ import {
   updateService,
 } from '#/lib/tools'
 
+import type { InferSchemaType } from '@tanstack/ai'
 import type { z } from 'zod'
 
 type ToolRunner = <T>(operation: () => Promise<T>) => Promise<T>
 
-type CrmTool<TSchema extends z.ZodType, TResult> = {
+type CrmTool<
+  TSchema extends z.ZodType,
+  TOutput extends z.ZodType,
+  TResult,
+> = {
   name: string
   description: string
   inputSchema: TSchema
+  outputSchema: TOutput
   execute: (input: z.input<TSchema>) => Promise<TResult>
 }
 
-function bindTool<TSchema extends z.ZodType, TResult>(
-  tool: CrmTool<TSchema, TResult>,
-  run: ToolRunner,
-) {
-  // SAFETY: toolDefinition validates against inputSchema before invoking the server handler, so input matches z.input<TSchema>.
+/**
+ * A tool result crosses into the model as JSON, so it is made JSON here —
+ * before outputSchema validates it. Without this the Dates drizzle hands back
+ * would fail the ISO-string fields the schema (and the generated code-mode
+ * stub) declares.
+ */
+function toJson<TResult>(result: TResult) {
+  if (result === undefined) return undefined
+  // SAFETY: JSON.parse returns exactly what JSON.stringify wrote.
+  return JSON.parse(JSON.stringify(result)) as unknown
+}
+
+function bindTool<
+  TSchema extends z.ZodType,
+  TOutput extends z.ZodType,
+  TResult,
+>(tool: CrmTool<TSchema, TOutput, TResult>, run: ToolRunner) {
   return toolDefinition({
     name: tool.name,
     description: tool.description,
     inputSchema: tool.inputSchema,
-  }).server((input) => run(() => tool.execute(input as z.input<TSchema>)))
+    outputSchema: tool.outputSchema,
+  }).server(async (input) => {
+    // SAFETY: toolDefinition validates against inputSchema before invoking the server handler, so input matches z.input<TSchema>.
+    const result = await run(() => tool.execute(input as z.input<TSchema>))
+    // SAFETY: toolDefinition validates the returned JSON against outputSchema before it reaches the model.
+    return toJson(result) as InferSchemaType<TOutput>
+  })
 }
 
 export function createChatTools(run: ToolRunner) {

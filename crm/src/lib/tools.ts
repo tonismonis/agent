@@ -148,6 +148,108 @@ function parsedExecute<TSchema extends z.ZodType, TResult>(
   }
 }
 
+/**
+ * The rows as a tool hands them back: JSON, not drizzle values, because the
+ * binding serializes a result before the model — and before this schema — sees
+ * it. So every timestamp is an ISO 8601 instant in UTC, and `notes` is absent
+ * rather than null when the Owner has notes restricted.
+ */
+const timestamp = z.iso.datetime()
+const deletedAt = timestamp
+  .nullable()
+  .describe('Soft-delete instant; null while the record is live')
+const notes = z
+  .string()
+  .nullable()
+  .optional()
+  .describe('Absent when the Owner has notes restricted')
+const clp = z.number().int().describe('Whole CLP')
+
+const clientRecord = z.object({
+  id: z.number().int(),
+  owner_id: z.string(),
+  name: z.string(),
+  email: z.string().nullable(),
+  phone: z.string().nullable(),
+  notes,
+  created_at: timestamp,
+  updated_at: timestamp,
+  deleted_at: deletedAt,
+})
+
+const serviceRecord = z.object({
+  id: z.number().int(),
+  owner_id: z.string(),
+  name: z.string(),
+  price: clp.describe('Whole CLP per hour when unit is "hour", otherwise total'),
+  unit: z.enum(['hour', 'flat']),
+  duration_minutes: z
+    .number()
+    .int()
+    .nullable()
+    .describe('Default appointment length; null when the service has none'),
+  created_at: timestamp,
+  updated_at: timestamp,
+  deleted_at: deletedAt,
+})
+
+const appointmentRecord = z.object({
+  id: z.number().int(),
+  owner_id: z.string(),
+  client_id: z.number().int(),
+  service_id: z.number().int(),
+  starts_at: timestamp,
+  ends_at: timestamp,
+  mode: z.enum(['online', 'in_person']),
+  status: z.enum(['scheduled', 'completed', 'cancelled', 'no_show']),
+  price: clp.describe('Whole CLP snapshotted when the appointment was booked'),
+  notes,
+  created_at: timestamp,
+  updated_at: timestamp,
+  deleted_at: deletedAt,
+})
+
+const paymentRecord = z.object({
+  id: z.number().int(),
+  owner_id: z.string(),
+  client_id: z.number().int(),
+  appointment_id: z
+    .number()
+    .int()
+    .nullable()
+    .describe('Appointment the payment settles; null when unattached'),
+  amount: clp,
+  paid_at: timestamp.describe('When the money was received'),
+  notes,
+  created_at: timestamp,
+  updated_at: timestamp,
+  deleted_at: deletedAt,
+})
+
+const workingHourRecord = z.object({
+  owner_id: z.string(),
+  weekday: z.number().int().describe('0 = Sunday through 6 = Saturday'),
+  start_time: z.string().describe('Local time of day as HH:MM:SS'),
+  end_time: z.string().describe('Local time of day as HH:MM:SS'),
+})
+
+const auditRecord = z.object({
+  id: z.number().int(),
+  owner_id: z.string(),
+  tool_name: z.string(),
+  input: z.unknown().describe('The JSON the tool was called with'),
+  entity: z.string(),
+  entity_id: z
+    .number()
+    .int()
+    .nullable()
+    .describe('Row the write touched; null when it never resolved one'),
+  before: z.unknown().describe('The record as it read before the write, or null'),
+  ok: z.boolean(),
+  error: z.string().nullable(),
+  ts: timestamp,
+})
+
 const listAuditLogInput = z
   .object({
     entity: z.enum(['client', 'service', 'appointment', 'payment']).optional(),
@@ -173,6 +275,7 @@ export const listAuditLog = {
   description:
     'List audit records by entity, entity ID, timestamp range, or outcome. Pass all: true for every record.',
   inputSchema: listAuditLogInput,
+  outputSchema: z.array(auditRecord),
   execute: parsedExecute(
     listAuditLogInput,
     async ({ entity, entity_id, since, until, ok }) =>
@@ -229,6 +332,7 @@ export const setWorkingHours = {
   description:
     'Replace the complete weekly working-hours template. Omitted weekdays become days off.',
   inputSchema: setWorkingHoursInput,
+  outputSchema: z.array(workingHourRecord),
   execute: auditedExecute(
     'set_working_hours',
     'working_hours',
@@ -258,6 +362,9 @@ export const findFreeSlots = {
   description:
     'Find exact-duration free slots in America/Santiago between inclusive local dates, excluding non-cancelled appointments.',
   inputSchema: findFreeSlotsInput,
+  outputSchema: z.array(
+    z.object({ starts_at: timestamp, ends_at: timestamp }),
+  ),
   execute: parsedExecute(
     findFreeSlotsInput,
     async ({ from, to, duration_minutes }) => {
@@ -321,6 +428,7 @@ export const updateOwnerProfile = {
   name: 'update_owner_profile',
   description: "Update the Owner's name. Other profile fields are operator-only.",
   inputSchema: updateOwnerProfileInput,
+  outputSchema: z.object({ name: z.string(), updated_at: timestamp }).optional(),
   execute: auditedExecute(
     'update_owner_profile',
     'owner',
@@ -354,6 +462,7 @@ export const createClient = {
   name: 'createClient',
   description: 'Create a client',
   inputSchema: createClientInput,
+  outputSchema: clientRecord,
   execute: auditedExecute(
     'createClient',
     'client',
@@ -376,6 +485,7 @@ export const createService = {
   name: 'createService',
   description: 'Create a service',
   inputSchema: createServiceInput,
+  outputSchema: serviceRecord,
   execute: auditedExecute(
     'createService',
     'service',
@@ -395,6 +505,7 @@ export const findServices = {
   name: 'findServices',
   description: 'Find active services by name',
   inputSchema: findServicesInput,
+  outputSchema: z.array(serviceRecord),
   execute: parsedExecute(
     findServicesInput,
     async ({ query }) =>
@@ -422,6 +533,7 @@ export const updateService = {
   name: 'updateService',
   description: 'Update a service',
   inputSchema: updateServiceInput,
+  outputSchema: serviceRecord.optional(),
   execute: auditedExecute(
     'updateService',
     'service',
@@ -452,6 +564,7 @@ export const softDeleteService = {
   name: 'softDeleteService',
   description: 'Soft delete a service',
   inputSchema: softDeleteServiceInput,
+  outputSchema: serviceRecord.optional(),
   execute: auditedExecute(
     'softDeleteService',
     'service',
@@ -480,6 +593,7 @@ export const restoreService = {
   name: 'restoreService',
   description: 'Restore a soft-deleted service',
   inputSchema: restoreServiceInput,
+  outputSchema: serviceRecord.optional(),
   execute: auditedExecute(
     'restoreService',
     'service',
@@ -514,6 +628,7 @@ export const updateClient = {
   name: 'updateClient',
   description: 'Update a client',
   inputSchema: updateClientInput,
+  outputSchema: clientRecord.optional(),
   execute: auditedExecute(
     'updateClient',
     'client',
@@ -544,6 +659,7 @@ export const softDeleteClient = {
   name: 'softDeleteClient',
   description: 'Soft delete a client',
   inputSchema: softDeleteClientInput,
+  outputSchema: clientRecord.optional(),
   execute: auditedExecute(
     'softDeleteClient',
     'client',
@@ -592,6 +708,7 @@ export const restoreClient = {
   name: 'restoreClient',
   description: 'Restore a soft-deleted client',
   inputSchema: restoreClientInput,
+  outputSchema: clientRecord.optional(),
   execute: auditedExecute(
     'restoreClient',
     'client',
@@ -625,6 +742,7 @@ export const findAppointments = {
   name: 'findAppointments',
   description: 'Find appointments by client, date range, and status',
   inputSchema: findAppointmentsInput,
+  outputSchema: z.array(appointmentRecord),
   execute: parsedExecute(
     findAppointmentsInput,
     async ({ client_id, from, to, status }) =>
@@ -657,6 +775,7 @@ export const updateAppointment = {
   name: 'updateAppointment',
   description: 'Update an appointment',
   inputSchema: updateAppointmentInput,
+  outputSchema: appointmentRecord.optional(),
   execute: auditedExecute(
     'updateAppointment',
     'appointment',
@@ -709,6 +828,7 @@ export const softDeleteAppointment = {
   name: 'softDeleteAppointment',
   description: 'Soft delete an appointment',
   inputSchema: softDeleteAppointmentInput,
+  outputSchema: appointmentRecord.optional(),
   execute: auditedExecute(
     'softDeleteAppointment',
     'appointment',
@@ -738,6 +858,7 @@ export const restoreAppointment = {
   description:
     'Restore a soft-deleted appointment. Rejects if its time now conflicts.',
   inputSchema: restoreAppointmentInput,
+  outputSchema: appointmentRecord.optional(),
   execute: auditedExecute(
     'restoreAppointment',
     'appointment',
@@ -774,6 +895,7 @@ export const findClients = {
   name: 'findClients',
   description: 'Find active clients by name',
   inputSchema: findClientsInput,
+  outputSchema: z.array(clientRecord),
   execute: parsedExecute(
     findClientsInput,
     async ({ query }) =>
@@ -839,6 +961,7 @@ export const createAppointment = {
   description:
     'Book an appointment. On an overlap error, relay the conflict to the owner and ask them to rebook another time.',
   inputSchema: createAppointmentInput,
+  outputSchema: appointmentRecord,
   execute: auditedExecute(
     'createAppointment',
     'appointment',
@@ -890,6 +1013,7 @@ export const createPayment = {
   name: 'createPayment',
   description: 'Record a payment received from a client',
   inputSchema: createPaymentInput,
+  outputSchema: paymentRecord,
   execute: auditedExecute(
     'createPayment',
     'payment',
@@ -914,6 +1038,7 @@ export const findPayments = {
   name: 'findPayments',
   description: 'Find payments by client and paid_at range',
   inputSchema: findPaymentsInput,
+  outputSchema: z.array(paymentRecord),
   execute: parsedExecute(
     findPaymentsInput,
     async ({ client_id, from, to }) =>
@@ -943,6 +1068,7 @@ export const updatePayment = {
   name: 'updatePayment',
   description: 'Update a payment',
   inputSchema: updatePaymentInput,
+  outputSchema: paymentRecord.optional(),
   execute: auditedExecute(
     'updatePayment',
     'payment',
@@ -978,6 +1104,7 @@ export const softDeletePayment = {
   name: 'softDeletePayment',
   description: 'Soft delete a payment',
   inputSchema: softDeletePaymentInput,
+  outputSchema: paymentRecord.optional(),
   execute: auditedExecute(
     'softDeletePayment',
     'payment',
@@ -1006,6 +1133,7 @@ export const restorePayment = {
   name: 'restorePayment',
   description: 'Restore a soft-deleted payment',
   inputSchema: restorePaymentInput,
+  outputSchema: paymentRecord.optional(),
   execute: auditedExecute(
     'restorePayment',
     'payment',

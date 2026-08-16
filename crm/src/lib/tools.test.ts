@@ -1,3 +1,4 @@
+import { generateTypeStubs, toolsToBindings } from '@tanstack/ai-code-mode'
 import { eq, inArray } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { aroundEach, beforeAll, beforeEach, expect, test } from 'vitest'
@@ -100,6 +101,45 @@ test('chat registers restore and audit tools', () => {
       'update_owner_profile',
     ]),
   )
+})
+
+test('code-mode stubs carry every tool result shape', () => {
+  const stubs = generateTypeStubs(toolsToBindings(chatTools))
+
+  expect(stubs).not.toContain('Promise<unknown>')
+  expect(stubs).toContain(
+    'declare function createClient(input: CreateClientInput): Promise<CreateClientOutput>',
+  )
+  expect(stubs).toContain('deleted_at: string | null;')
+})
+
+test('code-mode bindings hand the model validated JSON', async () => {
+  const bindings = toolsToBindings(chatTools)
+
+  const created = await bindings.createClient.execute({
+    name: 'Rosa',
+    notes: 'private',
+  })
+
+  expect(created).toEqual(
+    expect.objectContaining({
+      name: 'Rosa',
+      created_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/),
+      deleted_at: null,
+    }),
+  )
+  // A write against an id that does not exist returns no row at all.
+  expect(
+    await bindings.updateClient.execute({ id: 987_654_321 }),
+  ).toBeUndefined()
+
+  await adminDb
+    .update(owners)
+    .set({ restricted_notes: true })
+    .where(eq(owners.id, ownerA))
+
+  const rows = await bindings.findClients.execute({})
+  expect(JSON.stringify(rows)).not.toContain('private')
 })
 
 test('tool call writes audit_log row', async () => {
