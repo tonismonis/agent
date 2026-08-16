@@ -23,6 +23,7 @@ import { createChatTools } from '#/lib/chat-tools'
 import { getDailyThreadId } from '#/lib/chat-thread'
 import {
   CHAT_MODEL,
+  CHAT_REASONING,
   OPENROUTER_PROVIDER_OPTIONS,
 } from '#/lib/inference-config'
 import { withOwnerTxn } from '#/lib/owner-context'
@@ -142,6 +143,7 @@ function startDetachedRun(owner: ChatOwner, params: ChatParams, now: Date) {
         runId: params.runId,
         modelOptions: {
           provider: OPENROUTER_PROVIDER_OPTIONS,
+          reasoning: CHAT_REASONING,
           user: owner.id,
         },
         middleware: [

@@ -138,6 +138,13 @@ function textOf(message: UIMessage) {
     .join('')
 }
 
+function thinkingOf(message: UIMessage) {
+  return message.parts
+    .filter((part) => part.type === 'thinking')
+    .map((part) => part.content)
+    .join('')
+}
+
 function toolCallPartsOf(message: UIMessage) {
   return message.parts.filter(
     (part): part is ToolCallPart => part.type === 'tool-call',
@@ -363,7 +370,15 @@ function Home() {
     [scrollWork],
   )
 
-  const { messages, sendMessage, isLoading, error } = useChat({
+  const {
+    messages,
+    sendMessage,
+    isLoading,
+    error,
+    stop,
+    connectionStatus,
+    resuming,
+  } = useChat({
     threadId,
     connection: fetchServerSentEvents('/api/chat'),
     persistence: true,
@@ -400,6 +415,13 @@ function Home() {
     day: 'numeric',
     month: 'long',
   }).format(new Date())
+  // 'disconnected' is this adapter's idle state between turns and 'connecting'
+  // fires on every send, so only the two genuinely degraded signals get a label.
+  const connectionLabel = resuming
+    ? 'resuming'
+    : connectionStatus === 'error'
+      ? 'offline'
+      : null
 
   const columnWidth = `w-full max-w-[816px] ${showWork ? 'mx-0' : 'mx-auto'}`
 
@@ -444,7 +466,10 @@ function Home() {
 
       <main className="flex min-h-0 flex-col">
         <header className="flex items-baseline justify-between border-b border-rule px-11 pb-[18px] pt-6 font-meta text-[10px] uppercase tracking-[0.16em] text-ink-mute">
-          <span>{dateLabel}</span>
+          <span className="flex gap-6">
+            <span>{dateLabel}</span>
+            {connectionLabel && <span>{connectionLabel}</span>}
+          </span>
           <span className="flex gap-6">
             <button
               className="cursor-pointer uppercase tracking-[0.16em] hover:text-ink"
@@ -469,14 +494,17 @@ function Home() {
         >
           {messages.map((message) => {
             const text = textOf(message)
+            const thinking = thinkingOf(message)
             const summary =
               message.role === 'assistant'
                 ? summarizeWrites(callsForMessage(message, callsByToolCall))
                 : ({ kind: 'none' } satisfies WriteSummary)
             const showCaret =
               streamingOnLastAssistant && message.id === lastAssistantId
+            const showThinking = Boolean(thinking) && (showCaret || !text)
 
-            if (!text && summary.kind === 'none' && !showCaret) return null
+            if (!text && summary.kind === 'none' && !showCaret && !showThinking)
+              return null
 
             if (message.role === 'user') {
               return (
@@ -491,6 +519,11 @@ function Home() {
 
             return (
               <div className="flex flex-col gap-[18px]" key={message.id}>
+                {showThinking && (
+                  <div className="max-w-[86%] whitespace-pre-wrap font-read text-ink-faint">
+                    {thinking}
+                  </div>
+                )}
                 {(text || showCaret) && (
                   <div className="max-w-[86%] whitespace-pre-wrap">
                     {text}
@@ -540,13 +573,24 @@ function Home() {
               rows={1}
               value={input}
             />
-            <button
-              className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
-              disabled={isLoading || !input.trim()}
-              type="submit"
-            >
-              send
-            </button>
+            {isLoading ? (
+              <button
+                className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
+                // Detached server run still completes and persists; stop only stops this client reading.
+                onClick={stop}
+                type="button"
+              >
+                stop
+              </button>
+            ) : (
+              <button
+                className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
+                disabled={!input.trim()}
+                type="submit"
+              >
+                send
+              </button>
+            )}
           </div>
         </form>
       </main>
