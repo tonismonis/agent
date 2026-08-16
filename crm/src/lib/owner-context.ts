@@ -33,7 +33,9 @@ export const db = new Proxy(
     get(_target, property) {
       const transaction = ownerTransactions.getStore()
       if (!transaction) throw new Error('Owner data requires withOwnerTxn')
+      // oxlint-disable-next-line anti-slop/no-reflect-get -- a proxy get trap forwards whatever property was asked for; the name is only known here
       const value = Reflect.get(transaction, property, transaction)
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- drizzle's methods have to be rebound to the transaction; its data properties must pass through untouched
       return typeof value === 'function' ? value.bind(transaction) : value
     },
   },

@@ -10,6 +10,15 @@
  * has never heard of must degrade to "render less", never throw.
  */
 
+import {
+  isJsonBoolean,
+  isJsonNumber,
+  isJsonObject,
+  isJsonString,
+  type JsonObject,
+  type JsonValue,
+} from '#/lib/json'
+
 /** At or above this many records written, the turn shows a card, not a list. */
 export const cardThreshold = 3
 
@@ -19,8 +28,9 @@ export type WorkCall = {
   /** Tool call part the call ran inside (the code-mode execution). */
   toolCallId: string
   name: string
-  args?: unknown
-  result?: unknown
+  /** The JSON the tool was called with, and the JSON it came back with. */
+  args?: JsonValue
+  result?: JsonValue
   error?: string
   durationMs?: number
   /** Set when the call was recovered from code text, so values are unknown. */
@@ -110,10 +120,9 @@ export function toolEntity(name: string) {
   return 'Record'
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
+/** The record case of a payload, or null — a call may carry anything at all. */
+function asRecord(value: JsonValue | undefined): JsonObject | null {
+  return isJsonObject(value) ? value : null
 }
 
 /** How many records one call touched: an array result means one per element. */
@@ -127,19 +136,22 @@ function subjectOf(call: WorkCall) {
   const result = asRecord(call.result)
   const args = asRecord(call.args)
   const name = result?.name ?? args?.name
-  if (typeof name === 'string' && name.trim()) return name.trim()
+  if (isJsonString(name) && name.trim()) return name.trim()
   return toolEntity(call.name)
 }
 
-export function formatFieldValue(field: string, value: unknown): string {
+export function formatFieldValue(
+  field: string,
+  value: JsonValue | undefined,
+): string {
   if (value === null || value === undefined) return '—'
-  if (typeof value === 'boolean') return value ? 'yes' : 'no'
-  if (typeof value === 'number') {
+  if (isJsonBoolean(value)) return value ? 'yes' : 'no'
+  if (isJsonNumber(value)) {
     if (/price|amount|rate|total/.test(field))
       return new Intl.NumberFormat('es-CL').format(value)
     return String(value)
   }
-  if (typeof value === 'string') {
+  if (isJsonString(value)) {
     if (field.endsWith('_at') || /^(starts|ends|paid)_/.test(field)) {
       const date = new Date(value)
       if (!Number.isNaN(date.getTime()))

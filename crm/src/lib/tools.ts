@@ -21,18 +21,53 @@ type AuditEntity =
   | 'working_hours'
   | 'owner'
 
-function containsNotes(value: unknown): boolean {
+/**
+ * What the audit log stores: the JSON a tool was called with or returned, plus
+ * the Dates drizzle hands back on a row before it is serialized.
+ */
+type AuditValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | Date
+  | Array<AuditValue>
+  | AuditObject
+
+type AuditObject = { [key: string]: AuditValue }
+
+/** The object case of an audited value, without discarding the caller's type. */
+function isAuditObject<T>(value: T): value is T & AuditObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** True for the rows and inputs that carry the numeric primary key. */
+function hasNumericId<T>(value: T): value is T & { id: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'id' in value &&
+    typeof value.id === 'number'
+  )
+}
+
+function containsNotes(value: AuditValue): boolean {
   if (Array.isArray(value)) return value.some(containsNotes)
-  if (value === null || typeof value !== 'object') return false
+  if (!isAuditObject(value)) return false
   return Object.entries(value).some(
     ([key, nested]) => key === 'notes' || containsNotes(nested),
   )
 }
 
 function redactNotes<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(redactNotes) as T
-  if (value === null || typeof value !== 'object' || value instanceof Date)
-    return value
+  if (Array.isArray(value)) {
+    // SAFETY: mapping every element of an array yields an array of the same type.
+    return value.map(redactNotes) as T
+  }
+  if (!isAuditObject(value) || value instanceof Date) return value
+  // SAFETY: rebuilding the object with its own keys, minus the redacted one,
+  // keeps the shape the caller passed in.
   return Object.fromEntries(
     Object.entries(value)
       .filter(([key]) => key !== 'notes')
@@ -42,7 +77,7 @@ function redactNotes<T>(value: T): T {
 
 class RestrictedNotesError extends Error {}
 
-async function enforceNotesBoundary(input: unknown) {
+async function enforceNotesBoundary(input: AuditValue) {
   const [owner] = await db
     .select({ restricted: owners.restricted_notes })
     .from(owners)
@@ -66,25 +101,14 @@ function auditedExecute<TSchema extends z.ZodType, TResult, TBefore = null>(
     let entityId: number | null = null
     let restricted = false
     try {
-      restricted = await enforceNotesBoundary(input)
+      // SAFETY: a tool input is the JSON the model called the tool with.
+      restricted = await enforceNotesBoundary(input as AuditValue)
       const parsed = schema.parse(input)
-      if (
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        'id' in parsed &&
-        typeof parsed.id === 'number'
-      )
-        entityId = parsed.id
+      if (hasNumericId(parsed)) entityId = parsed.id
       before = getBefore ? await getBefore(parsed) : null
       if (restricted) before = redactNotes(before)
       const result = await operation(parsed)
-      if (
-        typeof result === 'object' &&
-        result !== null &&
-        'id' in result &&
-        typeof result.id === 'number'
-      )
-        entityId = result.id
+      if (hasNumericId(result)) entityId = result.id
       await db.insert(audit_log).values({
         tool_name: toolName,
         input: restricted ? redactNotes(input) : input,
@@ -116,7 +140,8 @@ function parsedExecute<TSchema extends z.ZodType, TResult>(
   operation: (input: z.output<TSchema>) => Promise<TResult>,
 ) {
   return async (input: z.input<TSchema>) => {
-    const restricted = await enforceNotesBoundary(input)
+    // SAFETY: a tool input is the JSON the model called the tool with.
+    const restricted = await enforceNotesBoundary(input as AuditValue)
     const parsed = schema.parse(input)
     const result = await operation(parsed)
     return restricted ? redactNotes(result) : result

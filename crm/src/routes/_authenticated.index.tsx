@@ -7,12 +7,19 @@ import {
   millisecondsUntilThreadRotation,
 } from '#/lib/chat-thread'
 import {
+  isJsonNumber,
+  isJsonObject,
+  isJsonString,
+  parseJson,
+  type JsonValue,
+} from '#/lib/json'
+import {
   inferWriteCallsFromCode,
   summarizeWrites,
   type WorkCall,
   type WriteSummary,
 } from '#/lib/write-receipts'
-import type { UIMessage } from '@tanstack/ai-react'
+import type { UIMessage, UseChatOptions } from '@tanstack/ai-react'
 
 type ToolCallPart = Extract<UIMessage['parts'][number], { type: 'tool-call' }>
 
@@ -39,8 +46,8 @@ function writeStored(key: string, value: string) {
   }
 }
 
-function formatValue(value: unknown) {
-  if (typeof value === 'string') return value
+function formatValue(value: JsonValue | undefined) {
+  if (isJsonString(value)) return value
   try {
     return JSON.stringify(value, null, 2)
   } catch {
@@ -53,33 +60,75 @@ function truncate(text: string, limit: number) {
 }
 
 function getTypeScript(argumentsText: string) {
-  try {
-    const input = JSON.parse(argumentsText) as { typescriptCode?: unknown }
-    return typeof input.typescriptCode === 'string'
-      ? input.typescriptCode
-      : argumentsText
-  } catch {
-    return argumentsText
-  }
+  const input = parseJson(argumentsText)
+  const code = isJsonObject(input) ? input.typescriptCode : undefined
+  return isJsonString(code) ? code : argumentsText
 }
 
 /** `client_id=8 · limit=10` — the call's inputs on one line. */
-function formatArgs(args: unknown) {
+function formatArgs(args: JsonValue | undefined) {
   if (args === undefined || args === null) return ''
-  if (typeof args !== 'object' || Array.isArray(args))
-    return truncate(formatValue(args), 90)
-  const entries = Object.entries(args as Record<string, unknown>)
+  if (!isJsonObject(args)) return truncate(formatValue(args), 90)
+  const entries = Object.entries(args)
   if (entries.length === 0) return ''
   return truncate(
     entries
       .map(([key, value]) => {
-        const text =
-          typeof value === 'string' ? value : formatValue(value).replace(/\s+/g, ' ')
+        const text = isJsonString(value)
+          ? value
+          : formatValue(value).replace(/\s+/g, ' ')
         return `${key}=${truncate(text, 28)}`
       })
       .join(' · '),
     140,
   )
+}
+
+/** One code-mode event, read down to what the work margin renders from it. */
+type CodeModeEvent =
+  | { kind: 'call'; name: string; args: JsonValue }
+  | { kind: 'result'; name: string; result: JsonValue; durationMs?: number }
+  | { kind: 'error'; name: string; message: string; durationMs?: number }
+  | { kind: 'failed'; message: string; durationMs?: number }
+
+/**
+ * These payloads are the code-mode tool's own internals, not a contract it owes
+ * anyone, so anything that doesn't read as one of the four events reads as
+ * nothing happened.
+ */
+function readCodeModeEvent(
+  type: string,
+  data: JsonValue,
+): CodeModeEvent | null {
+  if (!isJsonObject(data)) return null
+  const durationMs = isJsonNumber(data.duration)
+    ? data.duration
+    : isJsonNumber(data.durationMs)
+      ? data.durationMs
+      : undefined
+
+  if (type === 'code_mode:execution_finished') {
+    if (data.success !== false) return null
+    const error = data.error
+    return {
+      kind: 'failed',
+      durationMs,
+      message:
+        isJsonObject(error) && isJsonString(error.message)
+          ? error.message
+          : 'execution failed',
+    }
+  }
+
+  const name = data.function
+  if (!isJsonString(name)) return null
+  if (type === 'code_mode:external_call')
+    return { kind: 'call', name, args: data.args }
+  if (type === 'code_mode:external_result')
+    return { kind: 'result', name, durationMs, result: data.result ?? null }
+  if (type === 'code_mode:external_error')
+    return { kind: 'error', name, durationMs, message: formatValue(data.error) }
+  return null
 }
 
 function textOf(message: UIMessage) {
@@ -258,72 +307,57 @@ function Home() {
     scrollIfPinned(workScroll.current, workEnd.current)
   }, [scrollIfPinned])
 
-  const onCustomEvent = useCallback(
-    (type: string, data: unknown, context: { toolCallId?: string }) => {
+  const onCustomEvent = useCallback<
+    NonNullable<UseChatOptions['onCustomEvent']>
+  >(
+    (type, data, context) => {
       const toolCallId = context.toolCallId
       if (!toolCallId || !type.startsWith('code_mode:')) return
-      const payload = (data ?? {}) as Record<string, unknown>
-      const name = typeof payload.function === 'string' ? payload.function : null
-      const duration =
-        typeof payload.duration === 'number'
-          ? payload.duration
-          : typeof payload.durationMs === 'number'
-            ? payload.durationMs
-            : undefined
+      // SAFETY: a custom event carries the JSON the tool serialized onto the stream.
+      const event = readCodeModeEvent(type, data as JsonValue)
 
-      setCallsByToolCall((current) => {
-        const calls = [...(current.get(toolCallId) ?? [])]
+      if (event) {
+        setCallsByToolCall((current) => {
+          const calls = [...(current.get(toolCallId) ?? [])]
 
-        if (type === 'code_mode:external_call' && name) {
-          calls.push({
-            key: `${toolCallId}:${callKey.current++}`,
-            toolCallId,
-            name,
-            args: payload.args,
-          })
-        } else if (
-          (type === 'code_mode:external_result' ||
-            type === 'code_mode:external_error') &&
-          name
-        ) {
-          // Pair the result with the most recent unfinished call of that name.
-          const index = calls.findLastIndex(
-            (call) =>
-              call.name === name &&
-              call.result === undefined &&
-              call.error === undefined,
-          )
-          if (index === -1) return current
-          calls[index] = {
-            ...calls[index]!,
-            durationMs: duration,
-            ...(type === 'code_mode:external_result'
-              ? { result: payload.result ?? null }
-              : { error: formatValue(payload.error) }),
+          if (event.kind === 'call') {
+            calls.push({
+              key: `${toolCallId}:${callKey.current++}`,
+              toolCallId,
+              name: event.name,
+              args: event.args,
+            })
+          } else if (event.kind === 'failed') {
+            calls.push({
+              key: `${toolCallId}:${callKey.current++}`,
+              toolCallId,
+              name: 'execute_typescript',
+              durationMs: event.durationMs,
+              error: event.message,
+            })
+          } else {
+            // Pair the result with the most recent unfinished call of that name.
+            const index = calls.findLastIndex(
+              (call) =>
+                call.name === event.name &&
+                call.result === undefined &&
+                call.error === undefined,
+            )
+            if (index === -1) return current
+            calls[index] = {
+              ...calls[index]!,
+              durationMs: event.durationMs,
+              ...(event.kind === 'result'
+                ? { result: event.result }
+                : { error: event.message }),
+            }
           }
-        } else if (
-          type === 'code_mode:execution_finished' &&
-          payload.success === false
-        ) {
-          const error = payload.error as { message?: unknown } | undefined
-          calls.push({
-            key: `${toolCallId}:${callKey.current++}`,
-            toolCallId,
-            name: 'execute_typescript',
-            durationMs: duration,
-            error:
-              typeof error?.message === 'string'
-                ? error.message
-                : 'execution failed',
-          })
-        } else {
-          return current
-        }
 
-        const next = new Map(current)
-        next.set(toolCallId, calls)
-        return next
-      })
+          const next = new Map(current)
+          next.set(toolCallId, calls)
+          return next
+        })
+      }
       scrollWork()
     },
     [scrollWork],
