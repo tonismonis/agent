@@ -36,16 +36,30 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
         rel: 'stylesheet',
         href: appCss,
       },
+      { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+      {
+        rel: 'preconnect',
+        href: 'https://fonts.gstatic.com',
+        crossOrigin: 'anonymous',
+      },
+      {
+        rel: 'stylesheet',
+        href: 'https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&family=IBM+Plex+Mono:wght@300;400;500&display=swap',
+      },
     ],
   }),
   shellComponent: RootDocument,
 })
 
+// Applied before first paint so a stored light theme never flashes dark.
+const themeScript = `try{var t=localStorage.getItem('chat-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}`
+
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html data-theme="dark" lang="en">
       <head>
         <HeadContent />
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
         <ClerkProvider>{children}</ClerkProvider>

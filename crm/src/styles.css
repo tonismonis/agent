@@ -1,6 +1,55 @@
 
 @import "tailwindcss";
 
+/*
+ * Ink on paper. One palette, two grounds: the raw values live on the
+ * [data-theme] blocks, the @theme block only points Tailwind at them so the
+ * `bg-ground` / `text-ink-dim` / `border-rule-strong` utilities exist once and
+ * resolve per theme. data-theme sits on <html>, which is also :root, so both
+ * halves land on the same element.
+ */
+@theme {
+  --font-read: "Newsreader", Georgia, serif;
+  --font-meta: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-ground: var(--paper-ground);
+  --color-ink: var(--paper-ink);
+  --color-ink-2: var(--paper-ink-2);
+  --color-ink-dim: var(--paper-ink-dim);
+  --color-ink-mute: var(--paper-ink-mute);
+  --color-ink-faint: var(--paper-ink-faint);
+  --color-ink-ghost: var(--paper-ink-ghost);
+  --color-rule: var(--paper-rule);
+  --color-rule-strong: var(--paper-rule-strong);
+}
+
+:root,
+[data-theme="dark"] {
+  --paper-ground: #1a1b18;
+  --paper-ink: #e8e4d8;
+  --paper-ink-2: #d6d2c6;
+  --paper-ink-dim: #b9b4a4;
+  --paper-ink-mute: #8b8778;
+  --paper-ink-faint: #6f6c60;
+  --paper-ink-ghost: #7c7869;
+  --paper-rule: rgb(232 228 216 / 0.14);
+  --paper-rule-strong: rgb(232 228 216 / 0.22);
+}
+
+/* Dark ink on paper reads as a hairline at less weight than the reverse, so the
+   light rules are a touch stronger. */
+[data-theme="light"] {
+  --paper-ground: #f1ede4;
+  --paper-ink: #1f1d18;
+  --paper-ink-2: #2f2c24;
+  --paper-ink-dim: #4a4438;
+  --paper-ink-mute: #6e6754;
+  --paper-ink-faint: #7c7563;
+  --paper-ink-ghost: #918a78;
+  --paper-rule: rgb(31 29 24 / 0.16);
+  --paper-rule-strong: rgb(31 29 24 / 0.28);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -13,5 +62,11 @@ body,
 
 body {
   margin: 0;
+  background: var(--color-ground);
+  color: var(--color-ink);
 }
 
+::selection {
+  background: var(--color-ink);
+  color: var(--color-ground);
+}
