@@ -10,15 +10,16 @@ import { messages as persistedMessages, runs } from '#/db/schema'
 import type { RunRecord } from '@tanstack/ai-persistence'
 
 function mapRun(row: typeof runs.$inferSelect): RunRecord {
-  return {
+  const run: RunRecord = {
     runId: row.run_id,
     threadId: row.thread_id,
     status: row.status,
     startedAt: row.started_at,
-    ...(row.finished_at != null ? { finishedAt: row.finished_at } : {}),
-    ...(row.error != null ? { error: { message: row.error } } : {}),
-    ...(row.usage_json != null ? { usage: row.usage_json } : {}),
   }
+  if (row.finished_at != null) run.finishedAt = row.finished_at
+  if (row.error != null) run.error = { message: row.error }
+  if (row.usage_json != null) run.usage = row.usage_json
+  return run
 }
 
 export function createOwnerChatPersistence(ownerId: string) {

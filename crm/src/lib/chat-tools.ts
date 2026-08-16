@@ -42,6 +42,7 @@ function bindTool<TSchema extends z.ZodType, TResult>(
   tool: CrmTool<TSchema, TResult>,
   run: ToolRunner,
 ) {
+  // SAFETY: toolDefinition validates against inputSchema before invoking the server handler, so input matches z.input<TSchema>.
   return toolDefinition({
     name: tool.name,
     description: tool.description,

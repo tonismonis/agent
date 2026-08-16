@@ -26,14 +26,18 @@ export type VerifiedClerkSession = {
   primaryEmail: string
 }
 
-export const db = new Proxy({} as RootDb, {
-  get(_target, property) {
-    const transaction = ownerTransactions.getStore()
-    if (!transaction) throw new Error('Owner data requires withOwnerTxn')
-    const value = Reflect.get(transaction, property, transaction)
-    return typeof value === 'function' ? value.bind(transaction) : value
+export const db = new Proxy(
+  // SAFETY: the target object is never read; every property access delegates to the active owner transaction.
+  {} as RootDb,
+  {
+    get(_target, property) {
+      const transaction = ownerTransactions.getStore()
+      if (!transaction) throw new Error('Owner data requires withOwnerTxn')
+      const value = Reflect.get(transaction, property, transaction)
+      return typeof value === 'function' ? value.bind(transaction) : value
+    },
   },
-})
+)
 
 export function withOwnerTxn<TResult>(
   ownerId: string,

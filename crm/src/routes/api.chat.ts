@@ -49,6 +49,7 @@ export const Route = createFileRoute('/api/chat')({
 
         const persistence = createOwnerChatPersistence(owner.id)
         const stream = chat({
+          // SAFETY: gpt-5.6-luna is a valid OpenRouter model id not yet in the SDK's union.
           adapter: openRouterText(
             CHAT_MODEL as Parameters<typeof openRouterText>[0],
           ),

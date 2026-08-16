@@ -11,6 +11,7 @@ import {
   services,
   working_hours,
 } from '#/db/schema'
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 
 type AuditEntity =
   | 'client'
@@ -53,15 +54,15 @@ async function enforceNotesBoundary(input: unknown) {
   return owner.restricted
 }
 
-function auditedExecute<TSchema extends z.ZodType, TResult>(
+function auditedExecute<TSchema extends z.ZodType, TResult, TBefore = null>(
   toolName: string,
   entity: AuditEntity,
   schema: TSchema,
   operation: (input: z.output<TSchema>) => Promise<TResult>,
-  getBefore?: (input: z.output<TSchema>) => Promise<unknown>,
+  getBefore?: (input: z.output<TSchema>) => Promise<TBefore>,
 ) {
   return async (input: z.input<TSchema>) => {
-    let before: unknown = null
+    let before: TBefore | null = null
     let entityId: number | null = null
     let restricted = false
     try {
@@ -636,7 +637,10 @@ export const updateAppointment = {
     'appointment',
     updateAppointmentInput,
     async ({ id, starts_at, duration_minutes, ...fields }) => {
-      const set: Record<string, unknown> = { ...fields, updated_at: sql`now()` }
+      const set: PgUpdateSetSource<typeof appointments> = {
+        ...fields,
+        updated_at: sql`now()`,
+      }
       const timeChanged = starts_at != null || duration_minutes != null
       if (timeChanged || fields.status === 'scheduled') {
         const [existing] = await db
@@ -919,13 +923,14 @@ export const updatePayment = {
     'payment',
     updatePaymentInput,
     async ({ id, paid_at, ...fields }) => {
+      const set: PgUpdateSetSource<typeof payments> = {
+        ...fields,
+        updated_at: sql`now()`,
+      }
+      if (paid_at) set.paid_at = new Date(paid_at)
       const [payment] = await db
         .update(payments)
-        .set({
-          ...fields,
-          ...(paid_at ? { paid_at: new Date(paid_at) } : {}),
-          updated_at: sql`now()`,
-        })
+        .set(set)
         .where(eq(payments.id, id))
         .returning()
       return payment

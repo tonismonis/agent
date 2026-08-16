@@ -140,7 +140,7 @@ export function formatFieldValue(field: string, value: unknown): string {
     return String(value)
   }
   if (typeof value === 'string') {
-    if (/_at$/.test(field) || /^(starts|ends|paid)_/.test(field)) {
+    if (field.endsWith('_at') || /^(starts|ends|paid)_/.test(field)) {
       const date = new Date(value)
       if (!Number.isNaN(date.getTime()))
         return new Intl.DateTimeFormat('en-GB', {
@@ -220,19 +220,15 @@ function cardRowsFor(calls: Array<WorkCall>): Array<ReceiptLine> {
   // The card shows the primary subject as it now reads: the last write that
   // came back with a whole record wins.
   for (let index = calls.length - 1; index >= 0; index -= 1) {
+    const raw = calls[index]?.result
     const record =
-      asRecord(calls[index]?.result) ??
-      asRecord(
-        Array.isArray(calls[index]?.result)
-          ? (calls[index]?.result as Array<unknown>).at(-1)
-          : undefined,
-      )
+      asRecord(raw) ?? (Array.isArray(raw) ? asRecord(raw.at(-1)) : null)
     if (!record) continue
     const rows = Object.entries(record)
       .filter(
         ([field, value]) =>
           !hiddenFields.has(field) &&
-          !/_id$/.test(field) &&
+          !field.endsWith('_id') &&
           value !== null &&
           value !== undefined &&
           value !== '',
@@ -296,6 +292,6 @@ export function inferWriteCallsFromCode(
     toolCallId,
     name,
     inferred: true,
-    result: new Array(count).fill(null),
+    result: Array.from({ length: count }, () => null),
   }))
 }

@@ -438,7 +438,7 @@ function Home() {
             const summary =
               message.role === 'assistant'
                 ? summarizeWrites(callsForMessage(message, callsByToolCall))
-                : ({ kind: 'none' } as WriteSummary)
+                : ({ kind: 'none' } satisfies WriteSummary)
             const showCaret =
               streamingOnLastAssistant && message.id === lastAssistantId
 
