@@ -88,6 +88,15 @@ const knownWriteTools = new Set(
 knownWriteTools.add('set_working_hours')
 knownWriteTools.add('update_owner_profile')
 
+/**
+ * Code mode exposes each CRM tool inside the sandbox as `external_<name>`, and
+ * that is the name its call events and the model's code carry. Everything here
+ * speaks the CRM tool's own name.
+ */
+export function crmToolName(bindingName: string) {
+  return bindingName.replace(/^external_/, '')
+}
+
 function normalize(name: string) {
   return name.replace(/[^a-z0-9]/gi, '').toLowerCase()
 }
@@ -295,7 +304,7 @@ export function inferWriteCallsFromCode(
   const pattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g
   let match = pattern.exec(code)
   while (match) {
-    const name = match[1]!
+    const name = crmToolName(match[1]!)
     if (knownWriteTools.has(name)) counts.set(name, (counts.get(name) ?? 0) + 1)
     match = pattern.exec(code)
   }

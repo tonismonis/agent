@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   cardThreshold,
+  crmToolName,
   inferWriteCallsFromCode,
   isWriteTool,
   summarizeWrites,
@@ -91,5 +92,21 @@ describe('summarizeWrites', () => {
       label: 'Appointment · created',
       value: '×2',
     })
+  })
+})
+
+describe('code-mode binding names', () => {
+  it('reads sandbox calls by their CRM tool name', () => {
+    const calls = inferWriteCallsFromCode(
+      `const c = await external_findClients({ query: "rosa" })
+       await external_createAppointment({ client_id: c[0].id, starts_at: "x" })`,
+      'call_3',
+    )
+
+    expect(calls.map((found) => found.name)).toEqual(['createAppointment'])
+  })
+
+  it('treats a live external_ write as a write', () => {
+    expect(isWriteTool(crmToolName('external_createClient'))).toBe(true)
   })
 })

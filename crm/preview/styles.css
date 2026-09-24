@@ -1,0 +1,5 @@
+@import "../src/styles.css";
+
+/* This Vite root is preview/, so Tailwind's automatic scan never reaches the
+   components whose classes it has to generate. */
+@source "../src";
