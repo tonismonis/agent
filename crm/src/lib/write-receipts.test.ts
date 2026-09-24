@@ -42,7 +42,7 @@ describe('summarizeWrites', () => {
     expect(summary).toEqual({
       kind: 'receipt',
       lines: [
-        { label: 'María Fuentes · phone', value: '+56 9 4412 8890' },
+        { label: 'María Fuentes · teléfono', value: '+56 9 4412 8890' },
       ],
     })
   })
@@ -53,7 +53,13 @@ describe('summarizeWrites', () => {
         key: `a${index}`,
         name: 'createAppointment',
         args: { client_id: 4, starts_at: '2026-08-19T17:00:00Z' },
-        result: { id: index, name: 'Piano lesson', price: 40000, mode: 'online' },
+        result: {
+          id: index,
+          name: 'Clase de piano',
+          starts_at: '2026-08-19T17:00:00Z',
+          price: 40000,
+          mode: 'in_person',
+        },
       }),
     )
     const summary = summarizeWrites(created)
@@ -61,8 +67,14 @@ describe('summarizeWrites', () => {
     expect(summary.kind).toBe('card')
     if (summary.kind !== 'card') return
     expect(summary.count).toBe(cardThreshold)
-    expect(summary.subject).toBe('Piano lesson')
-    expect(summary.rows).toContainEqual({ label: 'Price', value: '40.000' })
+    expect(summary.subject).toBe('Clase de piano')
+    expect(summary.rows).toContainEqual({ label: 'Precio', value: '40.000' })
+    expect(summary.rows).toContainEqual({ label: 'Modalidad', value: 'presencial' })
+    // 17:00 UTC is 13:00 in Santiago in August, whatever the browser's zone.
+    expect(summary.rows).toContainEqual({
+      label: 'Inicio',
+      value: 'mié 19 ago · 13:00',
+    })
   })
 
   it('ignores failed calls', () => {
@@ -89,7 +101,7 @@ describe('summarizeWrites', () => {
     expect(summary.kind).toBe('receipt')
     if (summary.kind !== 'receipt') return
     expect(summary.lines).toContainEqual({
-      label: 'Appointment · created',
+      label: 'Cita · creada',
       value: '×2',
     })
   })

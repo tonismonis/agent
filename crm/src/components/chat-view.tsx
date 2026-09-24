@@ -22,20 +22,27 @@ type Theme = 'dark' | 'light'
 const themeStorageKey = 'chat-theme'
 const workStorageKey = 'chat-work'
 
-/** What the server says when a run ends early; anything else reads as a failure. */
-const runEndings = new Set(['Run stopped', 'Run timed out', 'The run failed'])
+/** What the server says when a run ends early, as the Owner reads it. */
+const runEndings = new Map([
+  ['Run stopped', 'Detuviste la respuesta.'],
+  ['Run timed out', 'La respuesta tardó demasiado. Intenta de nuevo.'],
+  ['The run failed', 'No pude terminar la respuesta. Intenta de nuevo.'],
+])
 
 /**
  * The adapter reports a refused request only as `HTTP error! status: 409 …`,
  * body discarded, so the status is all there is to word it from.
  */
 function describeChatError(error: Error) {
-  if (runEndings.has(error.message)) return error.message
+  const ending = runEndings.get(error.message)
+  if (ending) return ending
   const status = /^HTTP error! status: (\d+)/.exec(error.message)?.[1]
-  if (status === '409') return 'Still finishing the last reply. Try again in a moment.'
-  if (status === '429') return 'Usage limit reached.'
-  if (status === '401' || status === '403') return 'Session expired. Reload the page.'
-  return 'Something went wrong. Try again.'
+  if (status === '409')
+    return 'Todavía estoy terminando la respuesta anterior. Intenta en un momento.'
+  if (status === '429') return 'Llegaste al límite de uso.'
+  if (status === '401' || status === '403')
+    return 'Tu sesión expiró. Recarga la página.'
+  return 'Algo salió mal. Intenta de nuevo.'
 }
 
 function readStored(key: string) {
@@ -166,7 +173,7 @@ function WriteReceipt({
   return (
     <div className="flex max-w-[86%] flex-col gap-[9px] border-l-2 border-ink py-[2px] pl-4 font-meta text-[11.5px] leading-[1.5]">
       <div className="text-[9.5px] uppercase tracking-[0.18em] text-ink-mute">
-        Written
+        Guardado
       </div>
       {receipt.lines.map((line) => (
         <div className="flex justify-between gap-5" key={`${line.label}-${line.value}`}>
@@ -189,7 +196,9 @@ function RecordCard({
       <div className="flex items-baseline justify-between gap-5 font-meta text-[9.5px] uppercase tracking-[0.18em] text-ink-mute">
         <span>{card.subject}</span>
         <span className="shrink-0 text-right">
-          {card.count} {card.count === 1 ? 'record' : 'records'} written
+          {card.count === 1
+            ? '1 registro guardado'
+            : `${card.count} registros guardados`}
         </span>
       </div>
       <div className="flex flex-col gap-[2px] font-meta text-[12px] leading-[1.7] text-ink-2">
@@ -213,6 +222,66 @@ function WriteSummaryView({ summary }: { summary: WriteSummary }) {
 function Caret() {
   return (
     <span className="ml-[3px] inline-block h-[17px] w-[9px] translate-y-[2px] bg-ink" />
+  )
+}
+
+/** Things an Owner can say on day one, one per kind of work the chat does. */
+const examplePrompts = [
+  '¿Qué tengo mañana?',
+  'Agenda a Rosa el martes a las 10, sesión online',
+  'Diego me pagó 35.000 por la sesión de ayer',
+  '¿Quién me debe plata?',
+]
+
+function greeting(now: Date) {
+  const hour = now.getHours()
+  if (hour < 12) return 'Buenos días'
+  if (hour < 20) return 'Buenas tardes'
+  return 'Buenas noches'
+}
+
+/**
+ * A new day's page before anything is said: who it is for, what it does, and
+ * a few sentences to start from. Picking one fills the input; it never sends.
+ */
+function EmptyState({
+  ownerName,
+  onPick,
+}: {
+  ownerName: string | undefined
+  onPick: (prompt: string) => void
+}) {
+  return (
+    <div className="mt-auto flex flex-col gap-7 pb-2">
+      <div className="flex flex-col gap-3">
+        <h1 className="m-0 font-read text-[34px] font-light leading-[1.15] text-ink">
+          {greeting(new Date())}
+          {ownerName ? `, ${ownerName}` : ''}.
+        </h1>
+        <p className="m-0 max-w-[520px] font-read text-[19px] font-light leading-[1.55] text-ink-dim">
+          Escríbeme como le contarías a una asistente: registro clientes, citas
+          y pagos, y te respondo sobre tu agenda y tus cuentas.
+        </p>
+      </div>
+      <div className="flex flex-col font-meta">
+        <div className="pb-3 text-[9.5px] uppercase tracking-[0.18em] text-ink-mute">
+          Por ejemplo
+        </div>
+        {examplePrompts.map((prompt) => (
+          <button
+            className="group flex cursor-pointer items-baseline justify-between gap-6 border-t border-rule py-[11px] text-left font-read text-[17px] font-light italic text-ink-dim last:border-b hover:text-ink"
+            key={prompt}
+            onClick={() => onPick(prompt)}
+            type="button"
+          >
+            <span>{prompt}</span>
+            <span className="shrink-0 font-meta text-[10px] not-italic uppercase tracking-[0.14em] text-ink-faint group-hover:text-ink-mute">
+              usar
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -240,6 +309,8 @@ export type ChatViewProps = {
   onSubmit: () => void
   onStop: () => void
   onCancelQueued: (id: string) => void
+  /** The Owner's name for the empty-state greeting, when known. */
+  ownerName?: string
 }
 
 export function ChatView({
@@ -254,11 +325,13 @@ export function ChatView({
   onSubmit,
   onStop,
   onCancelQueued,
+  ownerName,
 }: ChatViewProps) {
   const [theme, setTheme] = useState<Theme>('dark')
   const [showWork, setShowWork] = useState(import.meta.env.DEV)
   const messageEnd = useRef<HTMLDivElement>(null)
   const workEnd = useRef<HTMLDivElement>(null)
+  const inputField = useRef<HTMLTextAreaElement>(null)
   // Starts pinned, so the first paint of a stored transcript lands on its end.
   const messagesPinned = useRef(true)
   const workPinned = useRef(true)
@@ -308,17 +381,28 @@ export function ChatView({
     onSubmit()
   }
 
+  const isEmpty =
+    messages.length === 0 && !isLoading && queue.length === 0 && !error
+
+  function pickPrompt(prompt: string) {
+    onInputChange(prompt)
+    inputField.current?.focus()
+  }
+
   const lastAssistantId = messages.findLast(
     (message) => message.role === 'assistant',
   )?.id
   const streamingOnLastAssistant =
     isLoading && messages.at(-1)?.role === 'assistant'
 
-  const dateLabel = new Intl.DateTimeFormat('en-GB', {
+  const dateLabel = new Intl.DateTimeFormat('es-CL', {
+    timeZone: 'America/Santiago',
     weekday: 'long',
     day: 'numeric',
     month: 'long',
-  }).format(new Date())
+  })
+    .format(new Date())
+    .replace(',', '')
 
   const columnWidth = `w-full max-w-[816px] ${showWork ? 'mx-0' : 'mx-auto'}`
 
@@ -331,9 +415,10 @@ export function ChatView({
       {showWork && (
         <aside className="flex min-h-0 flex-col border-r border-rule font-meta">
           <div className="flex items-baseline justify-between px-[18px] pb-4 pt-6 text-[10px] uppercase tracking-[0.16em] text-ink-mute">
-            <span>Work</span>
+            <span>Trabajo</span>
             <span>
-              {workCalls.length} {workCalls.length === 1 ? 'call' : 'calls'}
+              {workCalls.length}{' '}
+              {workCalls.length === 1 ? 'llamada' : 'llamadas'}
             </span>
           </div>
           <div
@@ -343,7 +428,7 @@ export function ChatView({
             }}
           >
             {workCalls.length === 0 && (
-              <p className="pt-4 text-ink-faint">No calls this session.</p>
+              <p className="pt-4 text-ink-faint">Sin llamadas en esta sesión.</p>
             )}
             {workCalls.map((call) => (
               <WorkBlock call={call} key={call.key} />
@@ -351,13 +436,13 @@ export function ChatView({
             <div ref={workEnd} />
           </div>
           <div className="flex items-center justify-between border-t border-rule px-[18px] py-3 text-[10px] uppercase tracking-[0.14em] text-ink-mute">
-            <span>Dev</span>
+            <span>Desarrollo</span>
             <button
               className="cursor-pointer border-b border-ink-mute pb-[2px] uppercase tracking-[0.14em] hover:text-ink"
               onClick={toggleWork}
               type="button"
             >
-              hide
+              ocultar
             </button>
           </div>
         </aside>
@@ -375,14 +460,14 @@ export function ChatView({
               onClick={toggleTheme}
               type="button"
             >
-              {theme === 'dark' ? 'light' : 'dark'}
+              {theme === 'dark' ? 'claro' : 'oscuro'}
             </button>
             <button
               className="cursor-pointer uppercase tracking-[0.16em] hover:text-ink"
               onClick={toggleWork}
               type="button"
             >
-              {showWork ? 'hide work' : 'show work'}
+              {showWork ? 'ocultar trabajo' : 'ver trabajo'}
             </button>
           </span>
         </header>
@@ -393,6 +478,8 @@ export function ChatView({
             messagesPinned.current = isPinned(event.currentTarget)
           }}
         >
+          {isEmpty && <EmptyState onPick={pickPrompt} ownerName={ownerName} />}
+
           {messages.map((message) => {
             const text = textOf(message)
             const thinking = thinkingOf(message)
@@ -455,7 +542,7 @@ export function ChatView({
                 onClick={() => onCancelQueued(queued.id)}
                 type="button"
               >
-                queued · cancel
+                en cola · cancelar
               </button>
             </div>
           ))}
@@ -478,7 +565,8 @@ export function ChatView({
         >
           <div className="flex items-center gap-5 border border-rule-strong px-[18px] py-[15px]">
             <textarea
-              aria-label="Message"
+              ref={inputField}
+              aria-label="Mensaje"
               className="max-h-[40vh] min-h-[27px] flex-1 resize-none bg-transparent font-read text-[18px] font-light leading-[1.5] text-ink outline-none field-sizing-content placeholder:text-ink-ghost disabled:text-ink-mute"
               onChange={(event) => onInputChange(event.target.value)}
               onKeyDown={(event) => {
@@ -487,7 +575,7 @@ export function ChatView({
                   submit()
                 }
               }}
-              placeholder="Ask, or say what happened…"
+              placeholder="Pregunta, o cuéntame qué pasó…"
               rows={1}
               value={input}
             />
@@ -497,7 +585,7 @@ export function ChatView({
                 onClick={onStop}
                 type="button"
               >
-                stop
+                detener
               </button>
             ) : (
               <button
@@ -505,7 +593,7 @@ export function ChatView({
                 disabled={!input.trim()}
                 type="submit"
               >
-                send
+                enviar
               </button>
             )}
           </div>

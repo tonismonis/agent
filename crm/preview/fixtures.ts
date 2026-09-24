@@ -15,6 +15,7 @@ export type ChatState = Pick<
   | 'error'
   | 'queue'
   | 'connectionLabel'
+  | 'ownerName'
 >
 
 let nextId = 0
@@ -62,6 +63,7 @@ function queued(text: string): QueuedMessage {
 }
 
 const idle = {
+  ownerName: 'Tomás',
   isLoading: false,
   error: undefined,
   queue: [],
@@ -202,10 +204,10 @@ export const states = {
   resuming: () => ({
     ...idle,
     isLoading: true,
-    connectionLabel: 'resuming',
+    connectionLabel: 'retomando',
     ...withStreamingReply(),
   }),
-  offline: () => ({ ...idle, connectionLabel: 'offline', ...conversation() }),
+  offline: () => ({ ...idle, connectionLabel: 'sin conexión', ...conversation() }),
   busy: () => ({
     ...idle,
     ...conversation(),

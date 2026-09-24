@@ -46,14 +46,50 @@ export type WriteSummary =
 
 const writeVerbs = ['create', 'update', 'softdelete', 'soft_delete', 'restore', 'set']
 
-const entityByToken: Array<[string, string]> = [
-  ['client', 'Client'],
-  ['service', 'Service'],
-  ['appointment', 'Appointment'],
-  ['payment', 'Payment'],
-  ['working_hours', 'Working hours'],
-  ['owner_profile', 'Owner profile'],
+type Gender = 'm' | 'f'
+
+const entityByToken: Array<[string, string, Gender]> = [
+  ['client', 'Cliente', 'm'],
+  ['service', 'Servicio', 'm'],
+  ['appointment', 'Cita', 'f'],
+  ['payment', 'Pago', 'm'],
+  ['working_hours', 'Horario', 'm'],
+  ['owner_profile', 'Perfil', 'm'],
 ]
+
+/** Column names as the Owner reads them; unknown columns fall back to humanizeField. */
+const fieldLabels = new Map([
+  ['name', 'Nombre'],
+  ['email', 'Correo'],
+  ['phone', 'Teléfono'],
+  ['notes', 'Notas'],
+  ['price', 'Precio'],
+  ['unit', 'Unidad'],
+  ['duration_minutes', 'Duración (min)'],
+  ['starts_at', 'Inicio'],
+  ['ends_at', 'Término'],
+  ['mode', 'Modalidad'],
+  ['status', 'Estado'],
+  ['amount', 'Monto'],
+  ['paid_at', 'Pagado el'],
+  ['weekday', 'Día'],
+  ['start_time', 'Desde'],
+  ['end_time', 'Hasta'],
+  ['profession', 'Profesión'],
+])
+
+/** Stored enum values as the Owner says them. */
+const valueLabels = new Map([
+  ['in_person', 'presencial'],
+  ['scheduled', 'agendada'],
+  ['completed', 'realizada'],
+  ['cancelled', 'cancelada'],
+  ['no_show', 'no asistió'],
+  ['hour', 'por hora'],
+  ['flat', 'precio fijo'],
+])
+
+const santiago = 'America/Santiago'
 
 /** Fields that are plumbing, not something the owner asked to change. */
 const hiddenFields = new Set([
@@ -120,13 +156,53 @@ export function toolVerb(name: string): 'created' | 'updated' | 'removed' | 'res
   return 'updated'
 }
 
-export function toolEntity(name: string) {
+type Entity = { label: string; gender: Gender }
+
+const unknownEntity: Entity = { label: 'Registro', gender: 'm' }
+
+function entityOf(name: string): Entity {
   const flat = name.toLowerCase()
-  for (const [token, label] of entityByToken) {
-    if (flat.includes(token.replace('_', ''))) return label
-    if (flat.includes(token)) return label
+  for (const [token, label, gender] of entityByToken) {
+    if (flat.includes(token.replace('_', '')) || flat.includes(token))
+      return { label, gender }
   }
-  return 'Record'
+  return unknownEntity
+}
+
+export function toolEntity(name: string) {
+  return entityOf(name).label
+}
+
+const verbStems = {
+  created: 'cread',
+  updated: 'actualizad',
+  removed: 'eliminad',
+  restored: 'restaurad',
+  set: 'configurad',
+} satisfies Record<ReturnType<typeof toolVerb>, string>
+
+/** The verb as a participle agreeing with the record it acted on: `cita creada`. */
+function participle(name: string) {
+  const stem = verbStems[toolVerb(name)]
+  return `${stem}${entityOf(name).gender === 'f' ? 'a' : 'o'}`
+}
+
+/** `mié 14 oct · 10:00`, always in the practice's timezone. */
+function formatInstant(date: Date) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('es-CL', {
+      timeZone: santiago,
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value.replace(/\.$/, '')]),
+  )
+  return `${parts.weekday} ${parts.day} ${parts.month} · ${parts.hour}:${parts.minute}`
 }
 
 /** The record case of a payload, or null — a call may carry anything at all. */
@@ -154,7 +230,7 @@ export function formatFieldValue(
   value: JsonValue | undefined,
 ): string {
   if (value === null || value === undefined) return '—'
-  if (isJsonBoolean(value)) return value ? 'yes' : 'no'
+  if (isJsonBoolean(value)) return value ? 'sí' : 'no'
   if (isJsonNumber(value)) {
     if (/price|amount|rate|total/.test(field))
       return new Intl.NumberFormat('es-CL').format(value)
@@ -163,21 +239,12 @@ export function formatFieldValue(
   if (isJsonString(value)) {
     if (field.endsWith('_at') || /^(starts|ends|paid)_/.test(field)) {
       const date = new Date(value)
-      if (!Number.isNaN(date.getTime()))
-        return new Intl.DateTimeFormat('en-GB', {
-          weekday: 'short',
-          day: 'numeric',
-          month: 'short',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false,
-        })
-          .format(date)
-          .replace(/,/g, ' ·')
+      if (!Number.isNaN(date.getTime())) return formatInstant(date)
     }
-    return value.length > 48 ? `${value.slice(0, 47)}…` : value
+    const spoken = valueLabels.get(value) ?? value
+    return spoken.length > 48 ? `${spoken.slice(0, 47)}…` : spoken
   }
-  if (Array.isArray(value)) return `${value.length} items`
+  if (Array.isArray(value)) return `${value.length} elementos`
   try {
     const json = JSON.stringify(value)
     return json.length > 48 ? `${json.slice(0, 47)}…` : json
@@ -187,6 +254,8 @@ export function formatFieldValue(
 }
 
 export function humanizeField(field: string) {
+  const known = fieldLabels.get(field)
+  if (known) return known
   const words = field.replace(/_/g, ' ').trim()
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
@@ -194,19 +263,20 @@ export function humanizeField(field: string) {
 function receiptLinesFor(call: WorkCall): Array<ReceiptLine> {
   const subject = subjectOf(call)
   const verb = toolVerb(call.name)
+  const done = participle(call.name)
 
   if (call.inferred) {
     const count = recordCount(call)
     return [
       {
-        label: `${toolEntity(call.name)} · ${verb}`,
-        value: count > 1 ? `×${count}` : 'written',
+        label: `${toolEntity(call.name)} · ${done}`,
+        value: count > 1 ? `×${count}` : 'guardado',
       },
     ]
   }
 
   if (verb === 'removed' || verb === 'restored')
-    return [{ label: subject, value: verb }]
+    return [{ label: subject, value: done }]
 
   const args = asRecord(call.args)
   const moved = args
@@ -222,14 +292,14 @@ function receiptLinesFor(call: WorkCall): Array<ReceiptLine> {
     const count = recordCount(call)
     return [
       {
-        label: `${toolEntity(call.name)} · created`,
+        label: `${toolEntity(call.name)} · ${done}`,
         value: count > 1 ? `×${count}` : subject,
       },
     ]
   }
 
   if (moved.length === 0)
-    return [{ label: `${subject} · ${verb}`, value: 'written' }]
+    return [{ label: `${subject} · ${done}`, value: 'guardado' }]
 
   return moved.map(([field, value]) => ({
     label: `${subject} · ${humanizeField(field).toLowerCase()}`,

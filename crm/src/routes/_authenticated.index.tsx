@@ -123,9 +123,9 @@ function Home() {
   // 'connecting' fires on every send, so only 'error' reads as degraded.
   const connectionLabel =
     isLoading && !hasSent
-      ? 'resuming'
+      ? 'retomando'
       : connectionStatus === 'error'
-        ? 'offline'
+        ? 'sin conexión'
         : null
 
   return (

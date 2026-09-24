@@ -1,3 +1,4 @@
+import { esMX } from '@clerk/localizations'
 import { ClerkProvider } from '@clerk/tanstack-react-start'
 import {
   HeadContent,
@@ -28,7 +29,7 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
         content: 'width=device-width, initial-scale=1',
       },
       {
-        title: 'TanStack Start Starter',
+        title: 'Libreta',
       },
     ],
     links: [
@@ -56,13 +57,14 @@ const themeScript = `try{var t=localStorage.getItem('chat-theme');if(t==='light'
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html data-theme="dark" lang="en">
+    <html data-theme="dark" lang="es">
       <head>
         <HeadContent />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
-        <ClerkProvider>{children}</ClerkProvider>
+        {/* Clerk ships no es-CL; es-MX is the closest Latin American Spanish. */}
+        <ClerkProvider localization={esMX}>{children}</ClerkProvider>
         <TanStackDevtools
           config={{
             position: 'bottom-right',
