@@ -8,7 +8,14 @@ import tailwindcss from '@tailwindcss/vite'
 
 const config = defineConfig({
   resolve: { tsconfigPaths: true },
-  plugins: [devtools(), tailwindcss(), tanstackStart(), viteReact()],
+  plugins: [
+    // Vite already forwards browser console to the terminal; devtools piping
+    // on top sends each server log to the browser and back, forever.
+    devtools({ consolePiping: { enabled: false } }),
+    tailwindcss(),
+    tanstackStart(),
+    viteReact(),
+  ],
   test: {
     setupFiles: ['./src/test/setup.ts'],
     // Database integration tests share one local schema.

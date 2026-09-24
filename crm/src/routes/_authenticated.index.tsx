@@ -19,7 +19,11 @@ import {
   type WorkCall,
   type WriteSummary,
 } from '#/lib/write-receipts'
-import type { UIMessage, UseChatOptions } from '@tanstack/ai-react'
+import type {
+  QueuedMessage,
+  UIMessage,
+  UseChatOptions,
+} from '@tanstack/ai-react'
 
 type ToolCallPart = Extract<UIMessage['parts'][number], { type: 'tool-call' }>
 
@@ -29,6 +33,24 @@ const themeStorageKey = 'chat-theme'
 const workStorageKey = 'chat-work'
 
 export const Route = createFileRoute('/_authenticated/')({ component: Home })
+
+const connection = fetchServerSentEvents('/api/chat')
+
+/** What the server says when a run ends early; anything else reads as a failure. */
+const runEndings = new Set(['Run stopped', 'Run timed out', 'The run failed'])
+
+/**
+ * The adapter reports a refused request only as `HTTP error! status: 409 …`,
+ * body discarded, so the status is all there is to word it from.
+ */
+function describeChatError(error: Error) {
+  if (runEndings.has(error.message)) return error.message
+  const status = /^HTTP error! status: (\d+)/.exec(error.message)?.[1]
+  if (status === '409') return 'Still finishing the last reply. Try again in a moment.'
+  if (status === '429') return 'Usage limit reached.'
+  if (status === '401' || status === '403') return 'Session expired. Reload the page.'
+  return 'Something went wrong. Try again.'
+}
 
 function readStored(key: string) {
   try {
@@ -59,10 +81,19 @@ function truncate(text: string, limit: number) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
-function getTypeScript(argumentsText: string) {
-  const input = parsePartialJSON(argumentsText)
+/** The code a call ran: its parsed input once complete, partial JSON while streaming. */
+function getTypeScript(part: ToolCallPart) {
+  // SAFETY: a tool input is the JSON the model called the tool with.
+  const input = (part.input ?? parsePartialJSON(part.arguments)) as JsonValue
   const code = isJsonObject(input) ? input.typescriptCode : undefined
-  return isJsonString(code) ? code : argumentsText
+  return isJsonString(code) ? code : part.arguments
+}
+
+/** execute_typescript reported failure, so the code's writes are unknown. */
+function executionFailed(part: ToolCallPart) {
+  // SAFETY: the tool's output is the JSON its server handler returned.
+  const output = part.output as JsonValue | undefined
+  return isJsonObject(output) && output.success === false
 }
 
 /** `client_id=8 · limit=10` — the call's inputs on one line. */
@@ -131,6 +162,11 @@ function readCodeModeEvent(
   return null
 }
 
+function queuedText(queued: QueuedMessage) {
+  // SAFETY: this page only ever sends plain text.
+  return queued.content as string
+}
+
 function textOf(message: UIMessage) {
   return message.parts
     .filter((part) => part.type === 'text')
@@ -162,7 +198,10 @@ function callsForMessage(
   return toolCallPartsOf(message).flatMap((part) => {
     const live = callsByToolCall.get(part.id)
     if (live && live.length > 0) return live
-    return inferWriteCallsFromCode(getTypeScript(part.arguments), part.id)
+    // Each tool call commits on its own, so a failed run may have written some
+    // of its calls; with no per-call record left, claim none rather than all.
+    if (executionFailed(part)) return []
+    return inferWriteCallsFromCode(getTypeScript(part), part.id)
   })
 }
 
@@ -370,6 +409,8 @@ function Home() {
     [scrollWork],
   )
 
+  const [hasSent, setHasSent] = useState(false)
+
   const {
     messages,
     sendMessage,
@@ -377,10 +418,11 @@ function Home() {
     error,
     stop,
     connectionStatus,
-    resuming,
+    queue,
+    cancelQueued,
   } = useChat({
     threadId,
-    connection: fetchServerSentEvents('/api/chat'),
+    connection,
     persistence: true,
     onChunk: (chunk) => {
       if (chunk.type === 'TEXT_MESSAGE_CONTENT') scrollMessages()
@@ -403,8 +445,10 @@ function Home() {
 
   async function submit() {
     const message = input.trim()
-    if (!message || isLoading) return
+    if (!message) return
     setInput('')
+    setHasSent(true)
+    // While a reply streams this queues; it sends when the reply finishes.
     const sending = sendMessage(message)
     scrollMessages()
     await sending
@@ -415,13 +459,15 @@ function Home() {
     day: 'numeric',
     month: 'long',
   }).format(new Date())
-  // 'disconnected' is this adapter's idle state between turns and 'connecting'
-  // fires on every send, so only the two genuinely degraded signals get a label.
-  const connectionLabel = resuming
-    ? 'resuming'
-    : connectionStatus === 'error'
-      ? 'offline'
-      : null
+  // Loading before this page sent anything is the client reattaching to a run
+  // a previous page started. 'disconnected' is this adapter's idle state and
+  // 'connecting' fires on every send, so only 'error' reads as degraded.
+  const connectionLabel =
+    isLoading && !hasSent
+      ? 'resuming'
+      : connectionStatus === 'error'
+        ? 'offline'
+        : null
 
   const columnWidth = `w-full max-w-[816px] ${showWork ? 'mx-0' : 'mx-auto'}`
 
@@ -541,9 +587,27 @@ function Home() {
             </div>
           )}
 
+          {queue.map((queued) => (
+            <div
+              className="flex max-w-[74%] flex-col items-end gap-1 self-end text-right"
+              key={queued.id}
+            >
+              <div className="whitespace-pre-wrap text-ink-faint">
+                {queuedText(queued)}
+              </div>
+              <button
+                className="cursor-pointer font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
+                onClick={() => cancelQueued(queued.id)}
+                type="button"
+              >
+                queued · cancel
+              </button>
+            </div>
+          ))}
+
           {error && (
             <div className="max-w-[86%] border-t border-rule-strong pt-[18px] text-ink">
-              {error.message}
+              {describeChatError(error)}
             </div>
           )}
 
@@ -561,7 +625,6 @@ function Home() {
             <textarea
               aria-label="Message"
               className="max-h-[40vh] min-h-[27px] flex-1 resize-none bg-transparent font-read text-[18px] font-light leading-[1.5] text-ink outline-none field-sizing-content placeholder:text-ink-ghost disabled:text-ink-mute"
-              disabled={isLoading}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
