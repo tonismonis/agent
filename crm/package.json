@@ -76,5 +76,6 @@
       "isolated-vm",
       "@openrouter/sdk"
     ]
-  }
+  },
+  "packageManager": "pnpm@10.6.5"
 }
