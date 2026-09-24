@@ -1,22 +1,31 @@
 import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ChatView, queuedText } from '#/components/chat-view'
+import { loadChatPage, readTranscript } from '#/lib/chat-page.functions'
 import { getDailyThreadId, millisecondsUntilThreadRotation } from '#/lib/chat-thread'
 import { readCodeModeEvent } from '#/lib/code-mode-events'
 import type { JsonValue } from '#/lib/json'
 import type { WorkCall } from '#/lib/write-receipts'
 import type { UseChatOptions } from '@tanstack/ai-react'
 
-export const Route = createFileRoute('/_authenticated/')({ component: Home })
+export const Route = createFileRoute('/_authenticated/')({
+  loader: () => loadChatPage(),
+  component: Home,
+})
 
 const connection = fetchServerSentEvents('/api/chat')
 
 function Home() {
+  const page = Route.useLoaderData()
+  const loadedMessages = useMemo(
+    () => readTranscript(page.transcript),
+    [page.transcript],
+  )
   const [input, setInput] = useState('')
   const [hasSent, setHasSent] = useState(false)
-  const [threadId, setThreadId] = useState(() => getDailyThreadId())
+  const [threadId, setThreadId] = useState(page.threadId)
   const [callsByToolCall, setCallsByToolCall] = useState<
     Map<string, Array<WorkCall>>
   >(new Map())
@@ -93,6 +102,9 @@ function Home() {
     threadId,
     connection,
     persistence: true,
+    // The server already rendered the loaded day; a day rolled over since
+    // starts empty and hydrates like any other.
+    initialMessages: threadId === page.threadId ? loadedMessages : undefined,
     onCustomEvent,
     // A failed run discards the send queue; hand the unsent text back rather
     // than lose it. `queue` here is the render before the discard lands.
@@ -140,6 +152,7 @@ function Home() {
       onInputChange={setInput}
       onStop={stopRun}
       onSubmit={submit}
+      ownerName={page.ownerName}
       queue={queue}
     />
   )

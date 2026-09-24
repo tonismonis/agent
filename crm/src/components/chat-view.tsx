@@ -233,8 +233,18 @@ const examplePrompts = [
   '¿Quién me debe plata?',
 ]
 
+/**
+ * By the practice's clock, not the machine's: the server renders this first,
+ * and its zone (UTC in production) must agree with the browser's hydration.
+ */
 function greeting(now: Date) {
-  const hour = now.getHours()
+  const hour = Number(
+    new Intl.DateTimeFormat('es-CL', {
+      timeZone: 'America/Santiago',
+      hour: 'numeric',
+      hourCycle: 'h23',
+    }).format(now),
+  )
   if (hour < 12) return 'Buenos días'
   if (hour < 20) return 'Buenas tardes'
   return 'Buenas noches'
@@ -251,12 +261,14 @@ function EmptyState({
   ownerName: string | undefined
   onPick: (prompt: string) => void
 }) {
+  // A greeting, not a form letter: "Tomás", not "Tomás Maqui Ríos".
+  const firstName = ownerName?.trim().split(/\s+/)[0]
   return (
     <div className="mt-auto flex flex-col gap-7 pb-2">
       <div className="flex flex-col gap-3">
         <h1 className="m-0 font-read text-[34px] font-light leading-[1.15] text-ink">
           {greeting(new Date())}
-          {ownerName ? `, ${ownerName}` : ''}.
+          {firstName ? `, ${firstName}` : ''}.
         </h1>
         <p className="m-0 max-w-[520px] font-read text-[19px] font-light leading-[1.55] text-ink-dim">
           Escríbeme como le contarías a una asistente: registro clientes, citas
