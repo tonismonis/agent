@@ -429,6 +429,13 @@ function Home() {
       if (chunk.type.startsWith('TOOL_CALL_')) scrollWork()
     },
     onCustomEvent,
+    // A failed run discards the send queue; hand the unsent text back rather
+    // than lose it. `queue` here is the render before the discard lands.
+    onError: () => {
+      if (queue.length === 0) return
+      const unsent = queue.map(queuedText)
+      setInput((current) => [...unsent, current].filter(Boolean).join('\n\n'))
+    },
   })
 
   const workCalls = messages.flatMap((message) =>
