@@ -196,6 +196,7 @@ export const appointments = pgTable(
     updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
     deleted_at: timestamp({ withTimezone: true }),
   },
+  // Drizzle has no exclusion-constraint builder; migration adds appointments_no_overlap.
   (table) => [
     unique('appointments_id_owner_id_unique').on(table.id, table.owner_id),
     foreignKey({

@@ -1,5 +1,9 @@
 # Runbook
 
+## Database roles
+
+`pnpm db:migrate` connects with `DATABASE_ADMIN_URL`, applies migrations, then sets the `crm_app` password to the one in `DATABASE_URL`. No password lives in a migration. In production, `DATABASE_URL` carries a generated secret for `crm_app`; rotate it by changing the env var and rerunning `pnpm db:migrate`.
+
 ## RLS pooled verification
 
 The local pooled endpoint is PgBouncer on `localhost:6433`, configured for transaction pooling with one backend slot to force connection reuse.
@@ -7,8 +11,8 @@ The local pooled endpoint is PgBouncer on `localhost:6433`, configured for trans
 ```sh
 cd crm
 docker compose up -d --wait
-npm run db:migrate
-npm test -- src/lib/owner-context.pooled.test.ts
+pnpm db:migrate
+pnpm test src/lib/owner-context.pooled.test.ts
 ```
 
 The test connects as `crm_app`, interleaves two Owners through `withOwnerTxn`, covers CRM and chat-persistence rows, and verifies that transaction-local context attempted outside a transaction grants no access. Override only when needed with `DATABASE_POOLED_URL`.

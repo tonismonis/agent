@@ -3,8 +3,7 @@ import type { ProviderPreferences, ReasoningOptions } from '@tanstack/ai-openrou
 export const CHAT_MODEL = 'openai/gpt-5.6-luna' as const
 
 // Explicitly off: OpenRouter would otherwise apply the model's default effort,
-// and reasoning tokens bill as output. The checkpoint-2 A/B gate
-// (ab-utterances.md) must run against this same config before deploy.
+// and reasoning tokens bill as output. Model choice: docs/adr/0003.
 export const CHAT_REASONING = {
   effort: 'none',
 } satisfies ReasoningOptions

@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 
 import {
+  cancelChatRun,
   handleChatRequest,
   parseChatParams,
   replayOrHydrateChat,
@@ -23,7 +24,12 @@ export const Route = createFileRoute('/api/chat')({
           const params = await parseChatParams(request)
           const now = new Date()
           await enforceOwnerInferenceCap(owner.id, now)
-          return streamChatTurn(owner, params, now)
+          return streamChatTurn(owner, params, request, now)
+        }),
+      DELETE: ({ request }) =>
+        handleChatRequest(request, async () => {
+          const owner = await requireVerifiedOwner()
+          return cancelChatRun(owner.id)
         }),
     },
   },

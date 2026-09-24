@@ -6,6 +6,7 @@
 
 import {
   EventType,
+  RUN_CANCEL_REASON,
   chat,
   chatParamsFromRequest,
   maxIterations,
@@ -26,10 +27,10 @@ import {
   CHAT_REASONING,
   OPENROUTER_PROVIDER_OPTIONS,
 } from '#/lib/inference-config'
-import { withOwnerTxn } from '#/lib/owner-context'
 import { buildAppPrompt } from '#/lib/system-prompt'
+import { runOwnerTool } from '#/lib/tools'
 
-import type { StreamChunk } from '@tanstack/ai'
+import type { ChatMiddleware, StreamChunk, TokenUsage } from '@tanstack/ai'
 import type { owners } from '#/db/schema'
 
 type ChatOwner = typeof owners.$inferSelect
@@ -38,6 +39,12 @@ type ChatPersistence = ReturnType<typeof createOwnerChatPersistence>
 
 const isolateDriver = createNodeIsolateDriver()
 const THREAD_ROTATION_GRACE_MS = 5 * 60_000
+// Five model iterations plus sandbox runs finish well inside this; a run still
+// going is stalled upstream and would otherwise hold the Owner's input shut.
+const RUN_TIMEOUT_MS = 5 * 60_000
+// How long a new turn waits for the previous one's teardown, which is still
+// running when a fast client sends right after the final chunk.
+const PREVIOUS_RUN_GRACE_MS = 2_000
 
 class InvalidChatParamsError extends Error {}
 
@@ -94,101 +101,277 @@ function validateClientThreadId(
   if (!isValidClientThreadId(clientThreadId, now)) rejectRotatedThread()
 }
 
+type LiveRun = {
+  runId: string
+  controller: AbortController
+  done: Promise<void>
+}
+
 /**
- * Runs whose producer is alive in this process. We deploy one instance, so the
- * delivery log (`memoryStream`, in-process) and this set share a run's
- * lifetime: a run the database still calls 'running' but that is missing here
- * belongs to a process that died, and nothing will ever produce it again.
+ * The run each Owner has producing in this process — at most one, so a second
+ * tab or a send after Stop cannot interleave two runs' writes to one thread.
+ * We deploy one instance, so the delivery log (`memoryStream`, in-process) and
+ * this map share a run's lifetime: a run the database still calls 'running'
+ * but that is missing here belongs to a process that died, and nothing will
+ * ever produce it again.
  */
-const liveRuns = new Set<string>()
+const liveRuns = new Map<string, LiveRun>()
+
+/**
+ * The delivery log a run streams through. Logs live in one process-wide map,
+ * so the key carries the Owner: a runId is client-chosen, and a bare one
+ * would let any Owner who learned it read another's run.
+ */
+export function runLogId(ownerId: string, runId: string) {
+  return `${ownerId}:${runId}`
+}
+
+/** The cursor a reconnecting client resumes from, as `memoryStream` reads it. */
+function readResumeOffset(request: Request) {
+  return (
+    request.headers.get('Last-Event-ID') ??
+    new URL(request.url).searchParams.get('offset')
+  )
+}
+
+function conflict(error: string) {
+  return new Response(JSON.stringify({ error }), {
+    status: 409,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+/**
+ * Sums usage over every model call in a run. withPersistence stores only the
+ * last call's, and a code-mode turn makes at least two.
+ */
+function tallyUsage() {
+  let total: TokenUsage | null = null
+  const middleware: ChatMiddleware = {
+    name: 'usage-tally',
+    onUsage(_ctx, usage) {
+      total = {
+        promptTokens: (total?.promptTokens ?? 0) + usage.promptTokens,
+        completionTokens:
+          (total?.completionTokens ?? 0) + usage.completionTokens,
+        totalTokens: (total?.totalTokens ?? 0) + usage.totalTokens,
+        cost: (total?.cost ?? 0) + (usage.cost ?? 0),
+      }
+    },
+  }
+  return { middleware, total: () => total }
+}
+
+/** One turn as the model driver sees it: who, what, and how it reports back. */
+export type Turn = {
+  owner: ChatOwner
+  params: ChatParams
+  now: Date
+  /** Persistence and usage accounting the driver must run the model with. */
+  middleware: Array<ChatMiddleware>
+  abortController: AbortController
+}
+
+/** Produces a turn's chunks. The route runs the real model; tests stand in. */
+export type TurnDriver = (turn: Turn) => AsyncIterable<StreamChunk>
+
+/** The production driver: the Owner's CRM tools in code mode, on the model. */
+export const modelTurn: TurnDriver = ({
+  owner,
+  params,
+  now,
+  middleware,
+  abortController,
+}) => {
+  const ownerTools = createChatTools((operation) =>
+    runOwnerTool(owner.id, operation),
+  )
+  const { tools, systemPrompt } = createCodeMode({
+    driver: isolateDriver,
+    tools: ownerTools,
+  })
+  return chat({
+    // SAFETY: gpt-5.6-luna is a valid OpenRouter model id not yet in the SDK's union.
+    adapter: openRouterText(
+      CHAT_MODEL as Parameters<typeof openRouterText>[0],
+    ),
+    systemPrompts: [
+      buildAppPrompt({
+        now,
+        profession: owner.profession,
+        restrictedNotes: owner.restricted_notes,
+      }),
+      systemPrompt,
+    ],
+    tools: [...tools],
+    agentLoopStrategy: maxIterations(5),
+    messages: params.messages,
+    threadId: getDailyThreadId(now),
+    runId: params.runId,
+    modelOptions: {
+      provider: OPENROUTER_PROVIDER_OPTIONS,
+      reasoning: CHAT_REASONING,
+      user: owner.id,
+    },
+    middleware,
+    abortController,
+  })
+}
 
 /**
  * Start the model run detached from the HTTP request, producing into the
  * delivery log. A reload mid-answer cancels only the reader, so the reply still
  * finishes, still persists, and the reloaded page picks it up — by rejoining
- * the log, or from the stored transcript once the run is done.
+ * the log, or from the stored transcript once the run is done. Only Stop
+ * (`cancelChatRun`) or the timeout ends it early.
  */
-function startDetachedRun(owner: ChatOwner, params: ChatParams, now: Date) {
-  if (liveRuns.has(params.runId)) return
-  liveRuns.add(params.runId)
-
-  const sink = memoryStream({ runId: params.runId })
+function startDetachedRun(
+  turn: Omit<Turn, 'middleware' | 'abortController'>,
+  live: LiveRun,
+  finish: () => void,
+  driver: TurnDriver,
+) {
+  const { owner, params } = turn
+  const sink = memoryStream({ runId: runLogId(owner.id, params.runId) })
+  const persistence = createOwnerChatPersistence(owner.id)
+  const usage = tallyUsage()
+  const timeout = setTimeout(
+    () => live.controller.abort('Run timed out'),
+    RUN_TIMEOUT_MS,
+  )
 
   void (async () => {
     try {
-      const ownerTools = createChatTools((operation) =>
-        withOwnerTxn(owner.id, () => operation()),
-      )
-      const { tools, systemPrompt } = createCodeMode({
-        driver: isolateDriver,
-        tools: ownerTools,
-      })
-      const stream = chat({
-        // SAFETY: gpt-5.6-luna is a valid OpenRouter model id not yet in the SDK's union.
-        adapter: openRouterText(
-          CHAT_MODEL as Parameters<typeof openRouterText>[0],
-        ),
-        systemPrompts: [
-          buildAppPrompt({
-            now,
-            profession: owner.profession,
-            restrictedNotes: owner.restricted_notes,
-          }),
-          systemPrompt,
-        ],
-        tools: [...tools],
-        agentLoopStrategy: maxIterations(5),
-        messages: params.messages,
-        threadId: getDailyThreadId(now),
-        runId: params.runId,
-        modelOptions: {
-          provider: OPENROUTER_PROVIDER_OPTIONS,
-          reasoning: CHAT_REASONING,
-          user: owner.id,
-        },
+      const stream = driver({
+        ...turn,
         middleware: [
-          withPersistence(createOwnerChatPersistence(owner.id), {
-            snapshotStreaming: true,
-          }),
+          withPersistence(persistence, { snapshotStreaming: true }),
+          usage.middleware,
         ],
-        // No abortController: mirroring the request's signal into the run would
-        // abort it on the very disconnect this path exists to survive.
+        // Never the request's signal: that would abort the run on the very
+        // disconnect this path exists to survive.
+        abortController: live.controller,
       })
 
       for await (const chunk of stream) await sink.append([chunk])
+      if (live.controller.signal.aborted) {
+        const reason: unknown = live.controller.signal.reason
+        const message =
+          reason === RUN_CANCEL_REASON ? 'Run stopped' : String(reason)
+        await sink.append([runError(message)])
+      }
     } catch (error) {
       // The run died before emitting a terminal chunk; withPersistence already
-      // recorded the failure, so this only unblocks whoever reads the log.
-      // SAFETY: a RUN_ERROR chunk carries exactly these fields.
-      await sink.append([
-        {
-          type: EventType.RUN_ERROR,
-          message: error instanceof Error ? error.message : String(error),
-          timestamp: Date.now(),
-        } as StreamChunk,
-      ])
+      // recorded the failure, so this only unblocks whoever reads the log. The
+      // detail stays in the server log: it can carry SQL and parameters.
+      console.error('chat run failed', error)
+      await sink.append([runError('The run failed')])
     } finally {
+      clearTimeout(timeout)
+      try {
+        const total = usage.total()
+        if (total) {
+          await persistence.stores.runs.update(params.runId, { usage: total })
+        }
+      } catch (error) {
+        console.error('chat run usage not recorded', error)
+      }
       await sink.close()
-      liveRuns.delete(params.runId)
+      if (liveRuns.get(owner.id) === live) liveRuns.delete(owner.id)
+      finish()
     }
   })()
 }
 
-/** Start the turn, then stream it to this client by tailing its log. */
-export function streamChatTurn(
+function runError(message: string) {
+  // SAFETY: a RUN_ERROR chunk carries exactly these fields.
+  return {
+    type: EventType.RUN_ERROR,
+    message,
+    timestamp: Date.now(),
+  } as StreamChunk
+}
+
+/**
+ * Claim the Owner's single run slot for `runId`, waiting briefly for a
+ * previous run that is already tearing down.
+ */
+async function claimRunSlot(ownerId: string, runId: string) {
+  const previous = liveRuns.get(ownerId)
+  if (previous && previous.runId !== runId) {
+    await Promise.race([
+      previous.done,
+      new Promise((resolve) => setTimeout(resolve, PREVIOUS_RUN_GRACE_MS)),
+    ])
+  }
+  const current = liveRuns.get(ownerId)
+  if (current) {
+    if (current.runId === runId) return null
+    throw conflict('another run is in progress')
+  }
+  let finish = () => {}
+  const live: LiveRun = {
+    runId,
+    controller: new AbortController(),
+    done: new Promise<void>((resolve) => {
+      finish = resolve
+    }),
+  }
+  liveRuns.set(ownerId, live)
+  return { live, finish }
+}
+
+/**
+ * Start the turn, then stream it to this client by tailing its log. A request
+ * carrying a resume cursor is the client reconnecting to a turn it already
+ * started, so it only reads; a runId the Owner has used before never runs
+ * again, since its tools already wrote.
+ */
+export async function streamChatTurn(
   owner: ChatOwner,
   params: ChatParams,
+  request: Request,
   now: Date,
+  driver: TurnDriver = modelTurn,
 ) {
   validateClientThreadId(params.threadId, now)
-  startDetachedRun(owner, params, now)
+  const offset = readResumeOffset(request)
+
+  if (offset === null) {
+    const claim = await claimRunSlot(owner.id, params.runId)
+    if (claim) {
+      try {
+        const existing = await createOwnerChatPersistence(
+          owner.id,
+        ).stores.runs.get(params.runId)
+        if (existing) throw conflict('run already exists')
+      } catch (error) {
+        liveRuns.delete(owner.id)
+        claim.finish()
+        throw error
+      }
+      startDetachedRun(
+        { owner, params, now },
+        claim.live,
+        claim.finish,
+        driver,
+      )
+    }
+  }
+
   // This reader races the producer it just started, so it waits far longer for
   // a first chunk than a rejoin does, where an empty log means the run is gone.
   const reader = memoryStream(
-    { runId: params.runId, offset: '-1' },
+    { runId: runLogId(owner.id, params.runId), offset: offset ?? '-1' },
     { firstChunkDeadlineMs: 10_000 },
   )
   return resumeServerSentEventsResponse({ adapter: reader })
+}
+
+/** Stop: end the Owner's live run for good, not just this client's reading. */
+export function cancelChatRun(ownerId: string) {
+  liveRuns.get(ownerId)?.controller.abort(RUN_CANCEL_REASON)
+  return new Response(null, { status: 204 })
 }
 
 /**
@@ -197,11 +380,12 @@ export function streamChatTurn(
  * thread's input for the rest of the day.
  */
 async function abandonCrashedRun(
+  ownerId: string,
   persistence: ChatPersistence,
   threadId: string,
 ) {
   const active = await persistence.stores.runs.findActiveRun(threadId)
-  if (!active || liveRuns.has(active.runId)) return
+  if (!active || liveRuns.get(ownerId)?.runId === active.runId) return
   await persistence.stores.runs.update(active.runId, {
     status: 'aborted',
     finishedAt: Date.now(),
@@ -224,18 +408,24 @@ export async function replayOrHydrateChat(
 
   const threadId = getDailyThreadId(now)
   const persistence = createOwnerChatPersistence(ownerId)
-  const durability = memoryStream(request)
+  const offset = readResumeOffset(request)
 
-  if (durability.resumeFrom() !== null) {
+  if (offset !== null) {
     const runId = resolveResumeRunId(request)
     const run = runId ? await persistence.stores.runs.get(runId) : null
-    if (run?.threadId !== threadId) {
+    if (!runId || run?.threadId !== threadId) {
       throw new Response('Forbidden', { status: 403 })
     }
+    // Built from the checked runId, never from the cursor: a cursor naming any
+    // other log fails to read instead of replaying it.
+    const durability = memoryStream({
+      runId: runLogId(ownerId, runId),
+      offset,
+    })
     return resumeServerSentEventsResponse({ adapter: durability })
   }
 
-  await abandonCrashedRun(persistence, threadId)
+  await abandonCrashedRun(ownerId, persistence, threadId)
   return reconstructChat(persistence, request, {
     authorize: (requestedThreadId) =>
       Promise.resolve(requestedThreadId === threadId),

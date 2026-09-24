@@ -3,7 +3,7 @@ DO $$ BEGIN
     CREATE ROLE "crm_app";
   END IF;
 END $$;--> statement-breakpoint
-ALTER ROLE "crm_app" WITH LOGIN PASSWORD 'crm_app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;--> statement-breakpoint
+ALTER ROLE "crm_app" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;--> statement-breakpoint
 CREATE TABLE "owners" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"external_id" text,

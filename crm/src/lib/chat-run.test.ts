@@ -10,6 +10,7 @@ import {
   isValidClientThreadId,
   parseChatParams,
   replayOrHydrateChat,
+  runLogId,
 } from './chat-run'
 import { getDailyThreadId } from './chat-thread'
 
@@ -168,7 +169,7 @@ test('a rejoin replays the run log instead of the transcript', async () => {
     threadId,
     startedAt: Date.now(),
   })
-  const producer = memoryStream({ runId: 'live-run' })
+  const producer = memoryStream({ runId: runLogId(ownerId, 'live-run') })
   // SAFETY: a text-content chunk carries exactly these fields.
   await producer.append([
     {

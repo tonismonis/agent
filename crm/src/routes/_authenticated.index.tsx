@@ -576,8 +576,11 @@ function Home() {
             {isLoading ? (
               <button
                 className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
-                // Detached server run still completes and persists; stop only stops this client reading.
-                onClick={stop}
+                onClick={() => {
+                  stop()
+                  // stop() only detaches this client; the run itself is server-side.
+                  void fetch('/api/chat', { method: 'DELETE' })
+                }}
                 type="button"
               >
                 stop

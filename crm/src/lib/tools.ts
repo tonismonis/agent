@@ -1,7 +1,20 @@
-import { and, eq, gt, gte, ilike, isNull, lt, lte, ne, sql } from 'drizzle-orm'
+import {
+  DrizzleQueryError,
+  and,
+  eq,
+  gt,
+  gte,
+  ilike,
+  isNull,
+  lt,
+  lte,
+  ne,
+  sql,
+} from 'drizzle-orm'
+import { DatabaseError } from 'pg'
 import { z } from 'zod'
 
-import { db } from '#/db'
+import { db, withOwnerTxn } from '#/db'
 import {
   appointments,
   audit_log,
@@ -77,6 +90,25 @@ function redactNotes<T>(value: T): T {
 
 class RestrictedNotesError extends Error {}
 
+/**
+ * Failures whose audit row is written and whose own writes are rolled back to
+ * their savepoint, so the transaction around them is safe to commit.
+ */
+const auditedFailures = new WeakSet<Error>()
+
+/**
+ * drizzle's own message is the SQL plus every parameter, notes included; the
+ * driver error underneath says what actually went wrong.
+ */
+function describeQueryError(error: DrizzleQueryError) {
+  const cause = error.cause
+  if (!(cause instanceof DatabaseError)) return 'Database write failed'
+  // A concurrent booking that slipped past assertNoOverlap.
+  if (cause.constraint === 'appointments_no_overlap')
+    return 'Time conflict with another appointment'
+  return cause.message
+}
+
 async function enforceNotesBoundary(input: AuditValue) {
   const [owner] = await db
     .select({ restricted: owners.restricted_notes })
@@ -101,26 +133,34 @@ function auditedExecute<TSchema extends z.ZodType, TResult, TBefore = null>(
     let entityId: number | null = null
     let restricted = false
     try {
-      // SAFETY: a tool input is the JSON the model called the tool with.
-      restricted = await enforceNotesBoundary(input as AuditValue)
-      const parsed = schema.parse(input)
-      if (hasNumericId(parsed)) entityId = parsed.id
-      before = getBefore ? await getBefore(parsed) : null
-      if (restricted) before = redactNotes(before)
-      const result = await operation(parsed)
-      if (hasNumericId(result)) entityId = result.id
-      await db.insert(audit_log).values({
-        tool_name: toolName,
-        input: restricted ? redactNotes(input) : input,
-        entity,
-        entity_id: entityId,
-        before,
-        ok: true,
-        error: null,
+      // A savepoint, so a failed write — even one that errored in Postgres —
+      // rolls back alone and leaves the transaction able to record it.
+      return await db.transaction(async () => {
+        // SAFETY: a tool input is the JSON the model called the tool with.
+        restricted = await enforceNotesBoundary(input as AuditValue)
+        const parsed = schema.parse(input)
+        if (hasNumericId(parsed)) entityId = parsed.id
+        before = getBefore ? await getBefore(parsed) : null
+        if (restricted) before = redactNotes(before)
+        const result = await operation(parsed)
+        if (hasNumericId(result)) entityId = result.id
+        await db.insert(audit_log).values({
+          tool_name: toolName,
+          input: restricted ? redactNotes(input) : input,
+          entity,
+          entity_id: entityId,
+          before,
+          ok: true,
+          error: null,
+        })
+        return restricted ? redactNotes(result) : result
       })
-      return restricted ? redactNotes(result) : result
     } catch (error) {
       if (error instanceof RestrictedNotesError) restricted = true
+      const failure =
+        error instanceof DrizzleQueryError
+          ? new Error(describeQueryError(error), { cause: error })
+          : error
       await db.insert(audit_log).values({
         tool_name: toolName,
         input: restricted ? redactNotes(input) : input,
@@ -128,11 +168,37 @@ function auditedExecute<TSchema extends z.ZodType, TResult, TBefore = null>(
         entity_id: entityId,
         before,
         ok: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: failure instanceof Error ? failure.message : String(failure),
       })
-      throw error
+      const recorded =
+        failure instanceof Error ? failure : new Error(String(failure))
+      auditedFailures.add(recorded)
+      throw recorded
     }
   }
+}
+
+/**
+ * Run one tool call in its own Owner transaction. A failure the audit log has
+ * recorded commits that record before it is rethrown; any other failure rolls
+ * the whole call back.
+ */
+export async function runOwnerTool<TResult>(
+  ownerId: string,
+  operation: () => Promise<TResult>,
+) {
+  const outcome = await withOwnerTxn(ownerId, async () => {
+    try {
+      return { ok: true as const, value: await operation() }
+    } catch (error) {
+      if (error instanceof Error && auditedFailures.has(error)) {
+        return { ok: false as const, error }
+      }
+      throw error
+    }
+  })
+  if (!outcome.ok) throw outcome.error
+  return outcome.value
 }
 
 function parsedExecute<TSchema extends z.ZodType, TResult>(
