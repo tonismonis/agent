@@ -191,7 +191,7 @@ export const modelTurn: TurnDriver = ({
     tools: ownerTools,
   })
   return chat({
-    // SAFETY: gpt-5.6-luna is a valid OpenRouter model id not yet in the SDK's union.
+    // SAFETY: gpt-6-luna is a valid OpenRouter model id not yet in the SDK's union.
     adapter: openRouterText(
       CHAT_MODEL as Parameters<typeof openRouterText>[0],
     ),

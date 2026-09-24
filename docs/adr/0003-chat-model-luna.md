@@ -1,5 +1,7 @@
 # Chat model: gpt-5.6-luna on Azure
 
+Superseded by [ADR-0004](0004-chat-model-gpt-6-luna.md).
+
 The chat model is `openai/gpt-5.6-luna`, pinned to Azure (`only: ["azure"]`, `zdr: true`, `data_collection: "deny"`), with reasoning effort `none`. This replaces the v1 spec's `anthropic/claude-haiku-4-5` on Google Vertex / Amazon Bedrock ([#13](https://github.com/tonismonis/agent/issues/13)).
 
 Operator decision, 2026-09-23. luna costs about a fifth of haiku per token. The spec's adoption gate (checkpoint 2) had three parts:
