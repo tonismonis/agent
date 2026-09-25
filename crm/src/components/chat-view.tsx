@@ -1,5 +1,5 @@
 import { parsePartialJSON } from '@tanstack/ai'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { formatJson, isJsonObject, isJsonString, type JsonValue } from '#/lib/json'
 import {
@@ -142,23 +142,125 @@ function callsForMessage(
   })
 }
 
-function WorkBlock({ call }: { call: WorkCall }) {
-  const args = formatArgs(call.args)
-  const output = call.error ?? (call.result === undefined ? '' : formatJson(call.result))
+/** The live calls one turn made, as code-mode events reported them. */
+function liveCallsOf(
+  message: UIMessage,
+  callsByToolCall: Map<string, Array<WorkCall>>,
+) {
+  return toolCallPartsOf(message).flatMap(
+    (part) => callsByToolCall.get(part.id) ?? [],
+  )
+}
+
+/** Back-to-back calls to one tool: three bookings read as one entry. */
+type CallRun = { key: string; name: string; calls: Array<WorkCall> }
+
+function foldCalls(calls: Array<WorkCall>) {
+  const runs: Array<CallRun> = []
+  for (const call of calls) {
+    const last = runs.at(-1)
+    if (last?.name === call.name) last.calls.push(call)
+    else runs.push({ key: call.key, name: call.name, calls: [call] })
+  }
+  return runs
+}
+
+function totalMs(calls: Array<WorkCall>) {
+  return calls.reduce((sum, call) => sum + (call.durationMs ?? 0), 0)
+}
+
+/** `3 llamadas · 114 ms · 1 error` */
+function describeWork(calls: Array<WorkCall>) {
+  const errors = calls.filter((call) => call.error !== undefined).length
+  const ms = totalMs(calls)
+  return [
+    calls.length === 1 ? '1 llamada' : `${calls.length} llamadas`,
+    ms > 0 ? `${ms} ms` : null,
+    errors === 0 ? null : errors === 1 ? '1 error' : `${errors} errores`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function WorkBlock({ run }: { run: CallRun }) {
+  // A lone call shows what came back; a run shows each call's inputs.
+  const single = run.calls.length === 1 ? run.calls[0] : undefined
+  // One flowing line, clamped: a tall result would push the conversation apart.
+  const output =
+    single?.error ??
+    (single?.result === undefined
+      ? ''
+      : formatJson(single.result).replace(/\s+/g, ' '))
+  const finished = run.calls.filter((call) => call.durationMs !== undefined)
 
   return (
-    <div className="flex flex-col gap-1 border-t border-rule pt-4">
+    <div className="flex flex-col gap-1 border-t border-rule pt-3">
       <div className="flex justify-between gap-3 text-ink-dim">
-        <span className="break-all">{call.name}</span>
-        {call.durationMs !== undefined && (
-          <span className="shrink-0 text-ink-faint">{call.durationMs} ms</span>
+        <span className="break-all">
+          {run.name}
+          {!single && ` ×${run.calls.length}`}
+        </span>
+        {finished.length > 0 && (
+          <span className="shrink-0 text-ink-faint">{totalMs(finished)} ms</span>
         )}
       </div>
-      {args && <div>{args}</div>}
+      {run.calls.map((call) => {
+        const args = formatArgs(call.args)
+        const error = single ? undefined : call.error
+        if (!args && !error) return null
+        return (
+          <div key={call.key}>
+            {args}
+            {error && <span className="text-ink"> · {error}</span>}
+          </div>
+        )
+      })}
       {output && (
-        <pre className="m-0 whitespace-pre-wrap break-words font-meta text-[10px] leading-[1.55] text-ink-faint">
-          {truncate(output, 600)}
-        </pre>
+        <div className="line-clamp-3 break-all text-[10px] leading-[1.55] text-ink-faint">
+          {truncate(output, 400)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WorkCalls({ calls }: { calls: Array<WorkCall> }) {
+  return (
+    <div className="flex flex-col gap-3 font-meta text-[10.5px] leading-[1.6] text-ink-mute">
+      {foldCalls(calls).map((run) => (
+        <WorkBlock key={run.key} run={run} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Viewports wide enough to set a turn's calls in the margin beside it
+ * ((1376 − 816) / 2 = 280px); narrower ones fold them under the reply.
+ */
+const marginClass = 'hidden min-[1376px]:block'
+const inlineClass = 'min-[1376px]:hidden'
+
+/**
+ * One line of the conversation: the 816px column centered on the screen,
+ * with the right margin free for notes, so showing work never moves the text.
+ */
+function Row({
+  children,
+  margin,
+  className = '',
+}: {
+  children: ReactNode
+  margin?: ReactNode
+  className?: string
+}) {
+  return (
+    <div className={`grid grid-cols-[1fr_min(816px,100%)_1fr] ${className}`}>
+      <div className="col-start-2 flex min-w-0 flex-col px-11">{children}</div>
+      {margin && (
+        <aside className={`col-start-3 min-w-0 max-w-[320px] pr-6 pt-2 ${marginClass}`}>
+          {margin}
+        </aside>
       )}
     </div>
   )
@@ -341,12 +443,12 @@ export function ChatView({
 }: ChatViewProps) {
   const [theme, setTheme] = useState<Theme>('dark')
   const [showWork, setShowWork] = useState(import.meta.env.DEV)
+  // Turns whose calls are unfolded under the reply, on screens without a margin.
+  const [openWork, setOpenWork] = useState<ReadonlySet<string>>(new Set())
   const messageEnd = useRef<HTMLDivElement>(null)
-  const workEnd = useRef<HTMLDivElement>(null)
   const inputField = useRef<HTMLTextAreaElement>(null)
   // Starts pinned, so the first paint of a stored transcript lands on its end.
   const messagesPinned = useRef(true)
-  const workPinned = useRef(true)
 
   // The document already carries the stored theme (an inline script in the root
   // applies it before paint); this only catches the control's label up.
@@ -358,21 +460,11 @@ export function ChatView({
       setShowWork(storedWork === 'on')
   }, [])
 
-  const workCalls = messages.flatMap((message) =>
-    toolCallPartsOf(message).flatMap(
-      (part) => callsByToolCall.get(part.id) ?? [],
-    ),
-  )
-
   // Follow new content only while the reader is at the bottom; scrolling up
   // to reread unpins until they come back down.
   useEffect(() => {
     if (messagesPinned.current) messageEnd.current?.scrollIntoView({ block: 'end' })
-  }, [messages, queue.length, error, isLoading])
-
-  useEffect(() => {
-    if (workPinned.current) workEnd.current?.scrollIntoView({ block: 'end' })
-  }, [workCalls.length, callsByToolCall])
+  }, [messages, callsByToolCall, queue.length, error, isLoading])
 
   function toggleTheme() {
     const next: Theme = theme === 'dark' ? 'light' : 'dark'
@@ -385,6 +477,14 @@ export function ChatView({
     const next = !showWork
     setShowWork(next)
     writeStored(workStorageKey, next ? 'on' : 'off')
+  }
+
+  function toggleTurnWork(messageId: string) {
+    setOpenWork((current) => {
+      const next = new Set(current)
+      if (!next.delete(messageId)) next.add(messageId)
+      return next
+    })
   }
 
   function submit() {
@@ -416,109 +516,91 @@ export function ChatView({
     .format(new Date())
     .replace(',', '')
 
-  const columnWidth = `w-full max-w-[816px] ${showWork ? 'mx-0' : 'mx-auto'}`
-
   return (
-    <div
-      className={`grid h-screen overflow-hidden bg-ground text-ink ${
-        showWork ? 'grid-cols-[230px_1fr]' : 'grid-cols-1'
-      }`}
-    >
-      {showWork && (
-        <aside className="flex min-h-0 flex-col border-r border-rule font-meta">
-          <div className="flex items-baseline justify-between px-[18px] pb-4 pt-6 text-[10px] uppercase tracking-[0.16em] text-ink-mute">
-            <span>Trabajo</span>
-            <span>
-              {workCalls.length}{' '}
-              {workCalls.length === 1 ? 'llamada' : 'llamadas'}
-            </span>
-          </div>
-          <div
-            className="flex min-h-0 flex-1 flex-col gap-[22px] overflow-y-auto px-[18px] pb-6 text-[10.5px] leading-[1.6] text-ink-mute"
-            onScroll={(event) => {
-              workPinned.current = isPinned(event.currentTarget)
-            }}
+    <main className="flex h-screen flex-col overflow-hidden bg-ground text-ink">
+      <header className="flex items-baseline justify-between border-b border-rule px-11 pb-[18px] pt-6 font-meta text-[10px] uppercase tracking-[0.16em] text-ink-mute">
+        <span className="flex gap-6">
+          <span>{dateLabel}</span>
+          {connectionLabel && <span>{connectionLabel}</span>}
+        </span>
+        <span className="flex gap-6">
+          <button
+            className="cursor-pointer uppercase tracking-[0.16em] hover:text-ink"
+            onClick={toggleTheme}
+            type="button"
           >
-            {workCalls.length === 0 && (
-              <p className="pt-4 text-ink-faint">Sin llamadas en esta sesión.</p>
-            )}
-            {workCalls.map((call) => (
-              <WorkBlock call={call} key={call.key} />
-            ))}
-            <div ref={workEnd} />
-          </div>
-          <div className="flex items-center justify-between border-t border-rule px-[18px] py-3 text-[10px] uppercase tracking-[0.14em] text-ink-mute">
-            <span>Desarrollo</span>
-            <button
-              className="cursor-pointer border-b border-ink-mute pb-[2px] uppercase tracking-[0.14em] hover:text-ink"
-              onClick={toggleWork}
-              type="button"
-            >
-              ocultar
-            </button>
-          </div>
-        </aside>
-      )}
+            {theme === 'dark' ? 'claro' : 'oscuro'}
+          </button>
+          <button
+            className="cursor-pointer uppercase tracking-[0.16em] hover:text-ink"
+            onClick={toggleWork}
+            type="button"
+          >
+            {showWork ? 'ocultar trabajo' : 'ver trabajo'}
+          </button>
+        </span>
+      </header>
 
-      <main className="flex min-h-0 flex-col">
-        <header className="flex items-baseline justify-between border-b border-rule px-11 pb-[18px] pt-6 font-meta text-[10px] uppercase tracking-[0.16em] text-ink-mute">
-          <span className="flex gap-6">
-            <span>{dateLabel}</span>
-            {connectionLabel && <span>{connectionLabel}</span>}
-          </span>
-          <span className="flex gap-6">
-            <button
-              className="cursor-pointer uppercase tracking-[0.16em] hover:text-ink"
-              onClick={toggleTheme}
-              type="button"
-            >
-              {theme === 'dark' ? 'claro' : 'oscuro'}
-            </button>
-            <button
-              className="cursor-pointer uppercase tracking-[0.16em] hover:text-ink"
-              onClick={toggleWork}
-              type="button"
-            >
-              {showWork ? 'ocultar trabajo' : 'ver trabajo'}
-            </button>
-          </span>
-        </header>
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-[26px] overflow-y-auto pt-[30px] font-read text-[19px] font-light leading-[1.6]"
+        onScroll={(event) => {
+          messagesPinned.current = isPinned(event.currentTarget)
+        }}
+      >
+        {isEmpty && (
+          <Row className="mt-auto">
+            <EmptyState onPick={pickPrompt} ownerName={ownerName} />
+          </Row>
+        )}
 
-        <div
-          className={`flex min-h-0 flex-1 flex-col gap-[26px] overflow-y-auto px-11 pt-[30px] font-read text-[19px] font-light leading-[1.6] ${columnWidth}`}
-          onScroll={(event) => {
-            messagesPinned.current = isPinned(event.currentTarget)
-          }}
-        >
-          {isEmpty && <EmptyState onPick={pickPrompt} ownerName={ownerName} />}
+        {messages.map((message) => {
+          const text = textOf(message)
+          const thinking = thinkingOf(message)
+          const summary =
+            message.role === 'assistant'
+              ? summarizeWrites(callsForMessage(message, callsByToolCall))
+              : ({ kind: 'none' } satisfies WriteSummary)
+          const showCaret =
+            streamingOnLastAssistant && message.id === lastAssistantId
+          const showThinking = Boolean(thinking) && (showCaret || !text)
+          const calls = showWork ? liveCallsOf(message, callsByToolCall) : []
 
-          {messages.map((message) => {
-            const text = textOf(message)
-            const thinking = thinkingOf(message)
-            const summary =
-              message.role === 'assistant'
-                ? summarizeWrites(callsForMessage(message, callsByToolCall))
-                : ({ kind: 'none' } satisfies WriteSummary)
-            const showCaret =
-              streamingOnLastAssistant && message.id === lastAssistantId
-            const showThinking = Boolean(thinking) && (showCaret || !text)
+          if (
+            !text &&
+            summary.kind === 'none' &&
+            !showCaret &&
+            !showThinking &&
+            calls.length === 0
+          )
+            return null
 
-            if (!text && summary.kind === 'none' && !showCaret && !showThinking)
-              return null
-
-            if (message.role === 'user') {
-              return (
-                <div
-                  className="max-w-[74%] self-end whitespace-pre-wrap text-right text-ink-dim"
-                  key={message.id}
-                >
+          if (message.role === 'user') {
+            return (
+              <Row key={message.id}>
+                <div className="max-w-[74%] self-end whitespace-pre-wrap text-right text-ink-dim">
                   {text}
                 </div>
-              )
-            }
+              </Row>
+            )
+          }
 
-            return (
-              <div className="flex flex-col gap-[18px]" key={message.id}>
+          const workOpen = openWork.has(message.id)
+
+          return (
+            <Row
+              key={message.id}
+              margin={
+                calls.length > 0 && (
+                  <div className="flex flex-col gap-3">
+                    <div className="font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint">
+                      {describeWork(calls)}
+                    </div>
+                    <WorkCalls calls={calls} />
+                  </div>
+                )
+              }
+            >
+              <div className="flex flex-col gap-[18px]">
                 {showThinking && (
                   <div className="max-w-[86%] whitespace-pre-wrap font-read text-ink-faint">
                     {thinking}
@@ -531,21 +613,39 @@ export function ChatView({
                   </div>
                 )}
                 <WriteSummaryView summary={summary} />
+                {calls.length > 0 && (
+                  <div className={`flex max-w-[86%] flex-col gap-3 ${inlineClass}`}>
+                    <button
+                      aria-expanded={workOpen}
+                      className="cursor-pointer self-start font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint hover:text-ink"
+                      onClick={() => toggleTurnWork(message.id)}
+                      type="button"
+                    >
+                      {describeWork(calls)} · {workOpen ? 'ocultar' : 'ver'}
+                    </button>
+                    {workOpen && (
+                      <div className="border-l border-rule pl-[14px]">
+                        <WorkCalls calls={calls} />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            )
-          })}
+            </Row>
+          )
+        })}
 
-          {isLoading && !streamingOnLastAssistant && (
+        {isLoading && !streamingOnLastAssistant && (
+          <Row>
             <div className="max-w-[86%]">
               <Caret />
             </div>
-          )}
+          </Row>
+        )}
 
-          {queue.map((queued) => (
-            <div
-              className="flex max-w-[74%] flex-col items-end gap-1 self-end text-right"
-              key={queued.id}
-            >
+        {queue.map((queued) => (
+          <Row key={queued.id}>
+            <div className="flex max-w-[74%] flex-col items-end gap-1 self-end text-right">
               <div className="whitespace-pre-wrap text-ink-faint">
                 {queuedText(queued)}
               </div>
@@ -557,60 +657,62 @@ export function ChatView({
                 en cola · cancelar
               </button>
             </div>
-          ))}
+          </Row>
+        ))}
 
-          {error && (
+        {error && (
+          <Row>
             <div className="max-w-[86%] border-t border-rule-strong pt-[18px] text-ink">
               {describeChatError(error)}
             </div>
+          </Row>
+        )}
+
+        <div className="h-[6px] shrink-0" ref={messageEnd} />
+      </div>
+
+      <form
+        className="mx-auto w-full max-w-[816px] px-11 pb-[30px] pt-[22px]"
+        onSubmit={(event) => {
+          event.preventDefault()
+          submit()
+        }}
+      >
+        <div className="flex items-center gap-5 border border-rule-strong px-[18px] py-[15px]">
+          <textarea
+            ref={inputField}
+            aria-label="Mensaje"
+            className="max-h-[40vh] min-h-[27px] flex-1 resize-none bg-transparent font-read text-[18px] font-light leading-[1.5] text-ink outline-none field-sizing-content placeholder:text-ink-ghost disabled:text-ink-mute"
+            onChange={(event) => onInputChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                submit()
+              }
+            }}
+            placeholder="Pregunta, o cuéntame qué pasó…"
+            rows={1}
+            value={input}
+          />
+          {isLoading ? (
+            <button
+              className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
+              onClick={onStop}
+              type="button"
+            >
+              detener
+            </button>
+          ) : (
+            <button
+              className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
+              disabled={!input.trim()}
+              type="submit"
+            >
+              enviar
+            </button>
           )}
-
-          <div className="h-[6px] shrink-0" ref={messageEnd} />
         </div>
-
-        <form
-          className={`px-11 pb-[30px] pt-[22px] ${columnWidth}`}
-          onSubmit={(event) => {
-            event.preventDefault()
-            submit()
-          }}
-        >
-          <div className="flex items-center gap-5 border border-rule-strong px-[18px] py-[15px]">
-            <textarea
-              ref={inputField}
-              aria-label="Mensaje"
-              className="max-h-[40vh] min-h-[27px] flex-1 resize-none bg-transparent font-read text-[18px] font-light leading-[1.5] text-ink outline-none field-sizing-content placeholder:text-ink-ghost disabled:text-ink-mute"
-              onChange={(event) => onInputChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault()
-                  submit()
-                }
-              }}
-              placeholder="Pregunta, o cuéntame qué pasó…"
-              rows={1}
-              value={input}
-            />
-            {isLoading ? (
-              <button
-                className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
-                onClick={onStop}
-                type="button"
-              >
-                detener
-              </button>
-            ) : (
-              <button
-                className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
-                disabled={!input.trim()}
-                type="submit"
-              >
-                enviar
-              </button>
-            )}
-          </div>
-        </form>
-      </main>
-    </div>
+      </form>
+    </main>
   )
 }
