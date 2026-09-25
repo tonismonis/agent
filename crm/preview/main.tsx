@@ -2,22 +2,23 @@
  * Design preview: ChatView rendered from fixtures, no auth, no model. Local
  * only — its own Vite config and port; the app build never references it.
  *
- *   /?state=queued&theme=light&work=off
+ *   /?state=queued&paper=hueso&work=off
  */
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { ChatView } from '#/components/chat-view'
+import { paperStorageKey, papers, pickPaper, readPaperChoice, showPaper } from '#/lib/paper'
 import { states, type ChatState, type StateName } from './fixtures'
 
 import './styles.css'
 
 const params = new URLSearchParams(window.location.search)
 const stateName = params.get('state')
-const theme = params.get('theme')
+const paperId = params.get('paper')
 const work = params.get('work')
 
-// ChatView reads its theme and work-margin preferences from storage on mount.
+// ChatView reads its paper and work-margin preferences from storage on mount.
 function store(key: string, value: string) {
   try {
     window.localStorage.setItem(key, value)
@@ -25,10 +26,19 @@ function store(key: string, value: string) {
     /* storage blocked: the view keeps its defaults */
   }
 }
-if (theme === 'light' || theme === 'dark') {
-  document.documentElement.dataset.theme = theme
-  store('chat-theme', theme)
+function stored(key: string) {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
 }
+
+// The app's root script shows the stored paper before paint; this page has
+// none, so it does the same here, before render.
+const choice = readPaperChoice(stored(paperStorageKey))
+const paper = papers.find((entry) => entry.id === paperId)
+showPaper(paper ? pickPaper(choice, paper) : choice)
 if (work === 'on' || work === 'off') store('chat-work', work)
 
 function isStateName(name: string | null): name is StateName {
@@ -84,7 +94,7 @@ function Index() {
           </li>
         ))}
       </ul>
-      <p className="mt-8">Add &amp;theme=light or &amp;work=off to any state.</p>
+      <p className="mt-8">Add &amp;paper=hueso or &amp;work=off to any state.</p>
     </main>
   )
 }

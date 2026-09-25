@@ -9,6 +9,7 @@ import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
 import TanStackQueryDevtools from '../integrations/tanstack-query/devtools'
+import { defaultPaperChoice, paperScript } from '../lib/paper'
 
 import appCss from '../styles.css?url'
 
@@ -52,15 +53,17 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
   shellComponent: RootDocument,
 })
 
-// Applied before first paint so a stored light theme never flashes dark.
-const themeScript = `try{var t=localStorage.getItem('chat-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}`
-
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html data-theme="dark" lang="es">
+    // paperScript swaps data-paper before hydration, on purpose.
+    <html
+      data-paper={defaultPaperChoice.dark}
+      lang="es"
+      suppressHydrationWarning
+    >
       <head>
         <HeadContent />
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: paperScript }} />
       </head>
       <body>
         {/* Clerk ships no es-CL; es-MX is the closest Latin American Spanish. */}

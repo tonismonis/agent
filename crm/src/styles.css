@@ -2,11 +2,14 @@
 @import "tailwindcss";
 
 /*
- * Ink on paper. One palette, two grounds: the raw values live on the
- * [data-theme] blocks, the @theme block only points Tailwind at them so the
- * `bg-ground` / `text-ink-dim` / `border-rule-strong` utilities exist once and
- * resolve per theme. data-theme sits on <html>, which is also :root, so both
- * halves land on the same element.
+ * Ink on paper. A few papers, each light or dark (src/lib/paper.ts): the raw
+ * values live on the [data-paper] blocks, the @theme block only points
+ * Tailwind at them so the `bg-ground` / `text-ink-dim` / `border-rule-strong`
+ * utilities exist once and resolve per paper. data-paper sits on <html>, which
+ * is also :root, so both halves land on the same element.
+ *
+ * Dark ink on paper reads as a hairline at less weight than the reverse, so
+ * the light papers' rules are a touch stronger.
  */
 @theme {
   --font-read: "Newsreader", Georgia, serif;
@@ -23,31 +26,59 @@
   --color-rule-strong: var(--paper-rule-strong);
 }
 
+/* The default. :root matches whatever paper is set, so this block comes first
+   and the others, equally specific, win by order. */
 :root,
-[data-theme="dark"] {
-  --paper-ground: #1a1b18;
-  --paper-ink: #e8e4d8;
-  --paper-ink-2: #d6d2c6;
-  --paper-ink-dim: #b9b4a4;
-  --paper-ink-mute: #8b8778;
-  --paper-ink-faint: #6f6c60;
-  --paper-ink-ghost: #7c7869;
-  --paper-rule: rgb(232 228 216 / 0.14);
-  --paper-rule-strong: rgb(232 228 216 / 0.22);
+[data-paper="pizarra"] {
+  color-scheme: dark;
+  --paper-ground: #191c1e;
+  --paper-ink: #e2e4e2;
+  --paper-ink-2: #d2d4d2;
+  --paper-ink-dim: #b6b8b7;
+  --paper-ink-mute: #878c8c;
+  --paper-ink-faint: #6d7272;
+  --paper-ink-ghost: #7a7f7f;
+  --paper-rule: rgb(226 228 226 / 0.14);
+  --paper-rule-strong: rgb(226 228 226 / 0.22);
 }
 
-/* Dark ink on paper reads as a hairline at less weight than the reverse, so the
-   light rules are a touch stronger. */
-[data-theme="light"] {
-  --paper-ground: #f1ede4;
-  --paper-ink: #1f1d18;
-  --paper-ink-2: #2f2c24;
-  --paper-ink-dim: #4a4438;
-  --paper-ink-mute: #6e6754;
-  --paper-ink-faint: #7c7563;
-  --paper-ink-ghost: #918a78;
-  --paper-rule: rgb(31 29 24 / 0.16);
-  --paper-rule-strong: rgb(31 29 24 / 0.28);
+[data-paper="hueso"] {
+  color-scheme: light;
+  --paper-ground: #e6dfcf;
+  --paper-ink: #23201a;
+  --paper-ink-2: #332f28;
+  --paper-ink-dim: #4e4a42;
+  --paper-ink-mute: #5f5848;
+  --paper-ink-faint: #6b6452;
+  --paper-ink-ghost: #655e4d;
+  --paper-rule: rgb(35 32 26 / 0.16);
+  --paper-rule-strong: rgb(35 32 26 / 0.28);
+}
+
+[data-paper="greige"] {
+  color-scheme: light;
+  --paper-ground: #e7e3da;
+  --paper-ink: #1e1d1a;
+  --paper-ink-2: #2e2d29;
+  --paper-ink-dim: #4a4944;
+  --paper-ink-mute: #625e55;
+  --paper-ink-faint: #6e6a60;
+  --paper-ink-ghost: #68645b;
+  --paper-rule: rgb(30 29 26 / 0.16);
+  --paper-rule-strong: rgb(30 29 26 / 0.28);
+}
+
+[data-paper="indigo"] {
+  color-scheme: dark;
+  --paper-ground: #171a23;
+  --paper-ink: #e3e2dc;
+  --paper-ink-2: #d3d2cd;
+  --paper-ink-dim: #b6b6b3;
+  --paper-ink-mute: #878a98;
+  --paper-ink-faint: #6d707e;
+  --paper-ink-ghost: #7a7d8b;
+  --paper-rule: rgb(227 226 220 / 0.14);
+  --paper-rule-strong: rgb(227 226 220 / 0.22);
 }
 
 * {
