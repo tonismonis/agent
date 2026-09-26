@@ -28,6 +28,14 @@ export const rangeInput = z
     'A date (2026-10-01) means that whole day in America/Santiago; otherwise ISO 8601, read as Santiago clock time when it has no offset',
   )
 
+/** A moment the Owner may give as a day only, like when money came in. */
+export const dateOrTimeInput = z
+  .string()
+  .regex(pattern)
+  .describe(
+    'A date (2026-10-01) means the start of that day in America/Santiago; otherwise ISO 8601, read as Santiago clock time when it has no offset',
+  )
+
 /** Half-open [start, end). */
 export type Range = { start: Date | null; end: Date | null }
 
@@ -140,8 +148,8 @@ export function toInstant(value: z.output<typeof timeInput>): Date {
 
 const santiagoDate = (instant: number) => Math.floor(santiagoWall(instant) / day)
 
-/** A bare date is the first instant of that Santiago day. */
-export function rangeStart(value: z.output<typeof rangeInput>): Date {
+/** A bare date is the first instant of that Santiago day; otherwise toInstant. */
+export function startOf(value: z.output<typeof dateOrTimeInput>): Date {
   const { wall, hasClock } = parse(value)
   if (hasClock) return toInstant(value)
   const first = candidates(wall).find((each) => santiagoDate(each) === wall / day)
@@ -153,12 +161,12 @@ export function rangeStart(value: z.output<typeof rangeInput>): Date {
 export function rangeEnd(value: z.output<typeof rangeInput>): Date {
   const { wall, hasClock } = parse(value)
   if (hasClock) return toInstant(value)
-  return rangeStart(new Date(wall + day).toISOString().slice(0, 10))
+  return startOf(new Date(wall + day).toISOString().slice(0, 10))
 }
 
 export function toRange(from?: string, to?: string): Range {
   return {
-    start: from ? rangeStart(from) : null,
+    start: from ? startOf(from) : null,
     end: to ? rangeEnd(to) : null,
   }
 }

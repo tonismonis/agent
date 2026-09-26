@@ -5,14 +5,14 @@ import {
   describeSantiagoSpan,
   describeSantiagoTime,
   rangeEnd,
-  rangeStart,
+  startOf,
   timeInput,
   rangeInput,
   toInstant,
   toRange,
 } from './santiago-time'
 
-const convert = { toInstant, rangeStart, rangeEnd }
+const convert = { toInstant, startOf, rangeEnd }
 
 describe('string from the model to instant', () => {
   test.each([
@@ -23,12 +23,12 @@ describe('string from the model to instant', () => {
     ['2026-10-01T17:00:30.5', 'toInstant', '2026-10-01T20:00:30.500Z'],
     ['2026-09-06T01:30', 'toInstant', '2026-09-06T04:30:00.000Z'],
     ['2027-04-03T23:30', 'toInstant', '2027-04-04T02:30:00.000Z'],
-    ['2026-09-29', 'rangeStart', '2026-09-29T03:00:00.000Z'],
+    ['2026-09-29', 'startOf', '2026-09-29T03:00:00.000Z'],
     ['2026-09-29', 'rangeEnd', '2026-09-30T03:00:00.000Z'],
-    ['2026-09-06', 'rangeStart', '2026-09-06T04:00:00.000Z'],
+    ['2026-09-06', 'startOf', '2026-09-06T04:00:00.000Z'],
     ['2026-09-05', 'rangeEnd', '2026-09-06T04:00:00.000Z'],
     ['2027-04-03', 'rangeEnd', '2027-04-04T04:00:00.000Z'],
-    ['2026-09-29T12:00', 'rangeStart', '2026-09-29T15:00:00.000Z'],
+    ['2026-09-29T12:00', 'startOf', '2026-09-29T15:00:00.000Z'],
     ['2026-09-29T19:00', 'rangeEnd', '2026-09-29T22:00:00.000Z'],
   ] as const)('%s %s', (input, fn, expected) => {
     expect(convert[fn](input).toISOString()).toBe(expected)
@@ -40,7 +40,7 @@ describe('string from the model to instant', () => {
 
   test('an impossible calendar date is rejected', () => {
     expect(() => toInstant('2026-02-30T10:00')).toThrow(/Not a real date/)
-    expect(() => rangeStart('2026-09-31')).toThrow(/Not a real date/)
+    expect(() => startOf('2026-09-31')).toThrow(/Not a real date/)
   })
 
   test('toRange leaves missing bounds open', () => {

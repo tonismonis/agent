@@ -25,8 +25,9 @@ import {
 import {
   describeSantiagoSpan,
   describeSantiagoTime,
+  dateOrTimeInput,
   rangeInput,
-  rangeStart,
+  startOf,
   timeInput,
   toInstant,
   toRange,
@@ -959,7 +960,7 @@ export const createAppointment = {
 const createPaymentInput = z.object({
   client_id: z.number(),
   amount: z.number().int().positive(),
-  paid_at: rangeInput.optional(),
+  paid_at: dateOrTimeInput.optional(),
   appointment_id: z.number().optional(),
   notes: z.string().optional(),
 })
@@ -976,7 +977,7 @@ export const createPayment = {
     async ({ paid_at, ...rest }) => {
       const [payment] = await db
         .insert(payments)
-        .values({ ...rest, paid_at: paid_at ? rangeStart(paid_at) : new Date() })
+        .values({ ...rest, paid_at: paid_at ? startOf(paid_at) : new Date() })
         .returning()
       return payment
     },
@@ -1016,7 +1017,7 @@ export const findPayments = {
 const updatePaymentInput = z.object({
   id: z.number(),
   amount: z.number().int().positive().optional(),
-  paid_at: rangeInput.optional(),
+  paid_at: dateOrTimeInput.optional(),
   appointment_id: z.number().optional(),
   notes: z.string().optional(),
 })
@@ -1035,7 +1036,7 @@ export const updatePayment = {
         ...fields,
         updated_at: sql`now()`,
       }
-      if (paid_at) set.paid_at = rangeStart(paid_at)
+      if (paid_at) set.paid_at = startOf(paid_at)
       const [payment] = await db
         .update(payments)
         .set(set)
