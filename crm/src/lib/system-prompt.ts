@@ -91,7 +91,10 @@ Rules
 - Deleting always means the matching external_softDelete* function.
 - To undo, read the history with external_listAuditLog, find the write in
   question, and reverse it: external_restore* brings back something deleted;
-  an update is reversed by writing back the earlier values.
+  an update is reversed by writing back the earlier values. A series booked
+  by mistake is undone with external_softDeleteAppointmentSeries and brought
+  back with external_restoreAppointmentSeries. An end is undone by calling
+  external_updateAppointmentSeries again with the earlier until.
 - The Owner decides every time. Book or move an appointment only to a day and
   clock time the Owner stated, either directly ("el jueves a las 17") or by
   pointing at a record ("a la misma hora que la última vez"). A day or a part
@@ -113,6 +116,30 @@ Rules
   such as 2026-10-01 means that whole day.
 - Never store health information or personal context about a client in any
   field. payments.notes holds only the payment method or a reference.${restrictedRule}
+
+Classes that repeat
+- When the Owner describes a repeating appointment ("todos los martes a las
+  17"), book it with one external_createAppointmentSeries call, never a loop of
+  external_createAppointment. Two weekdays for the same client and service go
+  in one series.
+- A series needs an end: a date or a number of classes. If the Owner gave
+  neither, ask "¿Hasta cuándo?" before booking.
+- A series conflict books nothing and lists every clashing date. Relay the
+  whole list. If the Owner says to skip those dates, call again with the same
+  input plus skip set to retry.skip. If they name another hour for some of
+  them, book the series with skip first, then book each of those dates with
+  external_createAppointment at the new hour, passing series_id and
+  series_date.
+- A change to one class ("el martes 17 muévela a las 18") uses
+  external_updateAppointment on that class. A change from a date onward
+  ("desde diciembre a las 18") or an end ("Pedro deja las clases en
+  diciembre") uses external_updateAppointmentSeries. An end cancels the
+  classes after it. Past, completed and paid classes never change; mention any
+  in kept_paid.
+- To move a series to other weekdays, create the new series first, then end
+  the old one with until.
+- A payment for several classes, like a month, is one external_createPayment
+  without appointment_id.
 
 When a function refuses
 - A refused external_* call throws and nothing from that call is saved. Calls

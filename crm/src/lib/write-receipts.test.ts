@@ -121,3 +121,60 @@ describe('code-mode binding names', () => {
     expect(isWriteTool(crmToolName('external_createClient'))).toBe(true)
   })
 })
+
+describe('series receipts', () => {
+  it('names a created series by client and class count', () => {
+    expect(
+      summarizeWrites([
+        call({
+          name: 'createAppointmentSeries',
+          args: { client_id: 3, weekly: [{ day: 'tuesday', time: '17:00' }] },
+          result: {
+            id: 7,
+            client_name: 'Pedro Soto',
+            classes: Array.from({ length: 12 }, (_, id) => ({ id })),
+          },
+        }),
+      ]),
+    ).toEqual({
+      kind: 'receipt',
+      lines: [{ label: 'Serie · creada', value: 'Pedro Soto · 12 clases' }],
+    })
+  })
+
+  it('shows a new end date and weekly times the way the Owner reads them', () => {
+    expect(
+      summarizeWrites([
+        call({
+          name: 'updateAppointmentSeries',
+          args: {
+            id: 7,
+            until: '2026-12-15',
+            weekly: [{ day: 'tuesday', time: '18:00' }],
+          },
+          result: { id: 7, client_name: 'Pedro Soto' },
+        }),
+      ]),
+    ).toEqual({
+      kind: 'receipt',
+      lines: [
+        { label: 'Serie · hasta', value: 'mar 15 dic' },
+        { label: 'Serie · días', value: 'martes 18:00' },
+      ],
+    })
+  })
+
+  it('gives a refused call no receipt, and finds series writes in replayed code', () => {
+    expect(
+      summarizeWrites([
+        call({ name: 'createAppointmentSeries', error: 'No agendé…', refused: true }),
+      ]),
+    ).toEqual({ kind: 'none' })
+    expect(
+      inferWriteCallsFromCode(
+        'await external_softDeleteAppointmentSeries({ id: 7 })',
+        'call_9',
+      ).map((each) => each.name),
+    ).toEqual(['softDeleteAppointmentSeries'])
+  })
+})

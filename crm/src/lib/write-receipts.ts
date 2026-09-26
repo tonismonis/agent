@@ -50,7 +50,9 @@ const writeVerbs = ['create', 'update', 'softdelete', 'soft_delete', 'restore']
 
 type Gender = 'm' | 'f'
 
+/** First match wins: a series tool's name also contains "appointment". */
 const entityByToken: Array<[string, string, Gender]> = [
+  ['series', 'Serie', 'f'],
   ['client', 'Cliente', 'm'],
   ['service', 'Servicio', 'm'],
   ['appointment', 'Cita', 'f'],
@@ -74,6 +76,10 @@ const fieldLabels = new Map([
   ['amount', 'Monto'],
   ['paid_at', 'Pagado el'],
   ['profession', 'Profesión'],
+  ['from', 'Desde'],
+  ['until', 'Hasta'],
+  ['weekly', 'Días'],
+  ['skip', 'Sin'],
 ])
 
 /** Stored enum values as the Owner says them. */
@@ -112,6 +118,7 @@ const knownWriteTools = new Set(
     'Service',
     'Appointment',
     'Payment',
+    'AppointmentSeries',
   ].flatMap((entity) => [
     `create${entity}`,
     `update${entity}`,
@@ -200,6 +207,42 @@ function formatInstant(date: Date) {
   return `${parts.weekday} ${parts.day} ${parts.month} · ${parts.hour}:${parts.minute}`
 }
 
+const weekdayNames = new Map([
+  ['monday', 'lunes'],
+  ['tuesday', 'martes'],
+  ['wednesday', 'miércoles'],
+  ['thursday', 'jueves'],
+  ['friday', 'viernes'],
+  ['saturday', 'sábado'],
+  ['sunday', 'domingo'],
+])
+
+/** `mar 15 dic`, read off the calendar date itself. */
+function formatDate(value: string) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('es-CL', {
+      timeZone: 'UTC',
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+    })
+      .formatToParts(new Date(`${value}T12:00:00Z`))
+      .map((part) => [part.type, part.value.replace(/\.$/, '')]),
+  )
+  return `${parts.weekday} ${parts.day} ${parts.month}`
+}
+
+/** `martes 17:00, jueves 18:00` */
+function formatWeekly(value: Array<JsonValue>) {
+  return value
+    .flatMap((slot) =>
+      isJsonObject(slot) && isJsonString(slot.day) && isJsonString(slot.time)
+        ? [`${weekdayNames.get(slot.day) ?? slot.day} ${slot.time}`]
+        : [],
+    )
+    .join(', ')
+}
+
 /** The record case of a payload, or null — a call may carry anything at all. */
 function asRecord(value: JsonValue | undefined): JsonObject | null {
   return isJsonObject(value) ? value : null
@@ -231,7 +274,9 @@ export function formatFieldValue(
       return new Intl.NumberFormat('es-CL').format(value)
     return String(value)
   }
+  if (field === 'weekly' && Array.isArray(value)) return formatWeekly(value)
   if (isJsonString(value)) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return formatDate(value)
     if (field.endsWith('_at') || /^(starts|ends|paid)_/.test(field)) {
       const date = new Date(value)
       if (!Number.isNaN(date.getTime())) return formatInstant(date)
@@ -285,12 +330,15 @@ function receiptLinesFor(call: WorkCall): Array<ReceiptLine> {
     // A create moves every field at once; naming them all reads as noise, so
     // the line names the record and the count instead.
     const count = recordCount(call)
-    return [
-      {
-        label: `${toolEntity(call.name)} · ${done}`,
-        value: count > 1 ? `×${count}` : subject,
-      },
-    ]
+    const result = asRecord(call.result)
+    const classes = result?.classes
+    const value =
+      Array.isArray(classes) && isJsonString(result?.client_name)
+        ? `${result.client_name} · ${classes.length} clases`
+        : count > 1
+          ? `×${count}`
+          : subject
+    return [{ label: `${toolEntity(call.name)} · ${done}`, value }]
   }
 
   if (moved.length === 0)

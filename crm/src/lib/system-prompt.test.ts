@@ -30,6 +30,9 @@ test('prompt injects Owner name, profession, Santiago now, and operating rules',
   expect(prompt).toContain('"fix" means the mistake is yours.')
   expect(prompt).toContain('Never mention functions, fields, JSON, ids or errors to the Owner.')
   expect(prompt).not.toContain('When a booking fails because of an overlap')
+  expect(prompt).toContain('book it with one external_createAppointmentSeries call')
+  expect(prompt).toContain('create the new series first, then end')
+  expect(prompt).toContain('external_restoreAppointmentSeries')
 })
 
 test('restricted Owner prompt adds notes-off rule', () => {

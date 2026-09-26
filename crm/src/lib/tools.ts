@@ -5,6 +5,7 @@ import {
   gt,
   gte,
   ilike,
+  inArray,
   isNull,
   lt,
   sql,
@@ -14,6 +15,8 @@ import { z } from 'zod'
 
 import { db, withOwnerTxn } from '#/db'
 import {
+  appointmentSeries,
+  appointmentSeriesDays,
   appointments,
   audit_log,
   clients,
@@ -22,6 +25,7 @@ import {
   services,
 } from '#/db/schema'
 import {
+  TEMPLATES,
   refuse,
   RefusalError,
   type ConflictFrame,
@@ -30,6 +34,11 @@ import {
 } from '#/lib/refusal'
 import {
   NonexistentClockTime,
+  addDays,
+  clock,
+  localDate,
+  weekdayOf,
+  weekdays,
   describeSantiagoTime,
   dateOrTimeInput,
   rangeInput,
@@ -42,6 +51,14 @@ import {
   type Clock,
   type LocalDate,
 } from '#/lib/santiago-time'
+import {
+  describeRule,
+  describeWeekly,
+  inWeekOrder,
+  occurrenceOf,
+  planSeries,
+  type WeeklySlot,
+} from '#/lib/series'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 
 type AuditEntity =
@@ -49,6 +66,7 @@ type AuditEntity =
   | 'service'
   | 'appointment'
   | 'payment'
+  | 'series'
   | 'owner'
 
 /**
@@ -129,6 +147,31 @@ type ConstraintRefusal =
 
 const refusalByConstraint = new Map<string, ConstraintRefusal>([
   ['appointments_no_overlap', { kind: 'clash' }],
+  ['appointments_series_date_unique', { kind: 'clash' }],
+  [
+    'appointment_series_client_owner_fk',
+    { kind: 'missing', entity: 'client', field: 'client_id' },
+  ],
+  [
+    'appointment_series_service_owner_fk',
+    { kind: 'missing', entity: 'service', field: 'service_id' },
+  ],
+  [
+    'appointments_series_client_fk',
+    {
+      kind: 'fix',
+      path: 'series_id',
+      problem: "no series with that id for this client; find it with external_findAppointmentSeries",
+    },
+  ],
+  [
+    'appointments_series_day_fk',
+    {
+      kind: 'fix',
+      path: 'series_date',
+      problem: "that date is not on one of the series' weekdays",
+    },
+  ],
   [
     'appointments_client_owner_fk',
     { kind: 'missing', entity: 'client', field: 'client_id' },
@@ -471,6 +514,15 @@ const appointmentRecord = z.object({
   status: z.enum(['scheduled', 'completed', 'cancelled', 'no_show']),
   price: clp.describe('Whole CLP snapshotted when the appointment was booked'),
   notes,
+  series_id: z
+    .number()
+    .int()
+    .nullable()
+    .describe('The series this class belongs to; null for a single appointment'),
+  series_date: z
+    .string()
+    .nullable()
+    .describe('The series date this class stands for, even if it was moved'),
   created_at: timestamp,
   updated_at: timestamp,
   deleted_at: deletedAt,
@@ -513,7 +565,7 @@ const auditRecord = z.object({
 const listAuditLogInput = z
   .object({
     entity: z
-      .enum(['client', 'service', 'appointment', 'payment', 'owner'])
+      .enum(['client', 'service', 'appointment', 'payment', 'series', 'owner'])
       .optional(),
     entity_id: z.number().optional(),
     since: rangeInput.optional(),
@@ -778,7 +830,11 @@ export const softDeleteClient = writeTool({
     const client = await findClient({ id })
     if (!client) return undefined
     const upcoming = await db
-      .select({ id: appointments.id, starts_at: appointments.starts_at })
+      .select({
+        id: appointments.id,
+        starts_at: appointments.starts_at,
+        series_id: appointments.series_id,
+      })
       .from(appointments)
       .where(
         and(
@@ -789,15 +845,22 @@ export const softDeleteClient = writeTool({
         ),
       )
       .orderBy(appointments.starts_at)
-    if (upcoming.length)
+    if (upcoming.length) {
+      const rules = new Map<number, string>()
+      for (const { series_id } of upcoming)
+        if (series_id !== null && !rules.has(series_id))
+          rules.set(series_id, describeWeekly(await seriesWeekly(series_id)))
       throw refuse.clientHasFutureAppointments(
         client.name,
         upcoming.map((appointment) => ({
           ...appointment,
-          series_id: null,
-          series_rule: null,
+          series_rule:
+            appointment.series_id === null
+              ? null
+              : (rules.get(appointment.series_id) ?? null),
         })),
       )
+    }
     const [deleted] = await db
       .update(clients)
       .set({ deleted_at: sql`now()` })
@@ -1045,11 +1108,20 @@ export const findClients = readTool({
 
 type Span = { starts_at: Date; ends_at: Date }
 
-/** One time a write asks for. `span` is null when that clock time is skipped. */
-type Wanted = { date: LocalDate; time: Clock; span: Span | null }
+/**
+ * One time a write asks for. `span` is null when that clock time is skipped.
+ * `series` marks a class of a series, which may hold only one live class per
+ * rule date.
+ */
+type Wanted = {
+  date: LocalDate
+  time: Clock
+  span: Span | null
+  series?: { id: number; date: LocalDate }
+}
 type Placed = Wanted & { span: Span }
 
-function isPlaced(wanted: Wanted): wanted is Placed {
+function isPlaced<W extends Wanted>(wanted: W): wanted is W & { span: Span } {
   return wanted.span !== null
 }
 
@@ -1070,9 +1142,10 @@ const clashRow = z.object({
 })
 
 /**
- * Every scheduled, live appointment that overlaps any wanted span, in one
- * statement. Half-open intervals; RLS scopes it to the Owner. `ignore` holds
- * the appointments being moved or restored, which never clash with themselves.
+ * Every live appointment in the way of any wanted span, in one statement: a
+ * scheduled one that overlaps it (half-open), or the series' own class on the
+ * same rule date. RLS scopes it to the Owner. `ignore` holds the appointments
+ * being moved or restored, which never clash with themselves.
  */
 async function findClashes(
   placed: ReadonlyArray<Placed>,
@@ -1084,15 +1157,19 @@ async function findClashes(
       i,
       s: each.span.starts_at.toISOString(),
       e: each.span.ends_at.toISOString(),
+      series_id: each.series?.id ?? null,
+      series_date: each.series?.date ?? null,
     })),
   )
   const result = await db.execute(sql`
     select r.i, a.id, a.starts_at, a.ends_at, c.name
-    from jsonb_to_recordset(${spans}::jsonb) as r(i int, s timestamptz, e timestamptz)
-    join ${appointments} a on a.starts_at < r.e and a.ends_at > r.s
+    from jsonb_to_recordset(${spans}::jsonb)
+      as r(i int, s timestamptz, e timestamptz, series_id int, series_date date)
+    join ${appointments} a
+      on (a.status = 'scheduled' and a.starts_at < r.e and a.ends_at > r.s)
+      or (a.series_id = r.series_id and a.series_date = r.series_date)
     join ${clients} c on c.id = a.client_id and c.owner_id = a.owner_id
-    where a.status = 'scheduled'
-      and a.deleted_at is null
+    where a.deleted_at is null
       and not (${JSON.stringify(ignore)}::jsonb @> to_jsonb(a.id))
     order by r.i, a.starts_at
   `)
@@ -1118,27 +1195,46 @@ async function findClashes(
     })
 }
 
+/** Classes of one request that would overlap each other. */
+function overlapsAmong(placed: ReadonlyArray<Placed>): Array<ProblemFound> {
+  const sorted = [...placed].sort(
+    (a, b) => a.span.starts_at.getTime() - b.span.starts_at.getTime(),
+  )
+  const found: Array<ProblemFound> = []
+  let latest: Placed | undefined
+  for (const each of sorted) {
+    if (latest && each.span.starts_at < latest.span.ends_at)
+      found.push({
+        date: each.date,
+        time: each.time,
+        problem: 'overlaps_series',
+        other_time: latest.time,
+      })
+    if (!latest || each.span.ends_at > latest.span.ends_at) latest = each
+  }
+  return found
+}
+
 /**
  * All of these times are the Owner's, or a conflict listing every problem:
- * skipped clock hours, the `known` problems the caller found itself, and every
- * scheduled appointment in the way. Only then does `write` run, in a nested
+ * skipped clock hours, classes of the request overlapping each other, and
+ * every appointment in the way. Only then does `write` run, in a nested
  * savepoint. A concurrent booking that slips past the check trips a clash
  * constraint; it is re-read, now committed, and reported with its dates.
  */
-async function writeWithoutClashes<T>(
+async function writeWithoutClashes<T, W extends Wanted = Wanted>(
   frame: ConflictFrame,
-  wanted: ReadonlyArray<Wanted>,
-  write: (placed: Array<Placed>) => Promise<T>,
+  wanted: ReadonlyArray<W>,
+  write: (placed: Array<W & { span: Span }>) => Promise<T>,
   options: {
-    known?: ReadonlyArray<ProblemFound>
     ignore?: ReadonlyArray<number>
     priorSkip?: ReadonlyArray<LocalDate>
   } = {},
 ): Promise<T> {
-  const { known = [], ignore = [], priorSkip = [] } = options
+  const { ignore = [], priorSkip = [] } = options
   const placed = wanted.filter(isPlaced)
   const problems: Array<ProblemFound> = [
-    ...known,
+    ...overlapsAmong(placed),
     ...wanted
       .filter((each) => !isPlaced(each))
       .map((each) => ({
@@ -1170,21 +1266,53 @@ function classPrice(
     : Math.round((minutes / 60) * service.price)
 }
 
-const createAppointmentInput = z.object({
-  client_id: z.number(),
-  service_id: z.number(),
-  starts_at: timeInput,
-  duration_minutes: z.number().int().positive().optional(),
-  price: z.number().int().nonnegative().optional(),
-  mode: z.enum(['online', 'in_person']),
-  notes: z.string().optional(),
-})
+const createAppointmentInput = z
+  .object({
+    client_id: z.number(),
+    service_id: z.number(),
+    starts_at: timeInput,
+    duration_minutes: z.number().int().positive().optional(),
+    price: z.number().int().nonnegative().optional(),
+    mode: z.enum(['online', 'in_person']),
+    notes: z.string().optional(),
+    series_id: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        'With series_date: book this as a class of that series, e.g. a date that clashed, at another hour',
+      ),
+    series_date: localDate
+      .optional()
+      .describe('The series date this class stands for'),
+  })
+  .refine(
+    ({ series_id, series_date }) =>
+      (series_id === undefined) === (series_date === undefined),
+    { message: 'series_id and series_date go together', path: ['series_date'] },
+  )
+
+async function liveService(id: number) {
+  const [service] = await db
+    .select()
+    .from(services)
+    .where(and(eq(services.id, id), isNull(services.deleted_at)))
+  return service
+}
+
+async function liveSeries(id: number) {
+  const [series] = await db
+    .select()
+    .from(appointmentSeries)
+    .where(and(eq(appointmentSeries.id, id), isNull(appointmentSeries.deleted_at)))
+  return series
+}
 
 export const createAppointment = writeTool({
   name: 'createAppointment',
   entity: 'appointment',
   description:
-    'Book an appointment at a time the Owner stated. Refused when it collides with another scheduled appointment; the refusal says with which.',
+    'Book an appointment at a time the Owner stated. Refused when it collides with another scheduled appointment; the refusal says with which. With series_id and series_date it books a class of that series, e.g. a date that clashed, at the hour the Owner named instead.',
   guide: {
     does: 'Agenda una cita con un cliente, el día y a la hora que tú dices.',
     asks: {
@@ -1198,35 +1326,708 @@ export const createAppointment = writeTool({
   input: createAppointmentInput,
   output: appointmentRecord,
   run: async (input) => {
-    const [service] = await db
-      .select()
-      .from(services)
-      .where(and(eq(services.id, input.service_id), isNull(services.deleted_at)))
+    const service = await liveService(input.service_id)
     if (!service) throw refuse.notFound('service', input.service_id)
     const minutes = input.duration_minutes ?? service.duration_minutes
     if (minutes == null) throw refuse.askDuration(service.name)
+    const member = input.series_id !== undefined && input.series_date !== undefined
+      ? { id: input.series_id, date: input.series_date }
+      : undefined
+    if (member) {
+      const series = await liveSeries(member.id)
+      if (!series) throw refuse.notFound('series', member.id)
+      if (series.client_id !== input.client_id)
+        throw refuse.invalidInput([
+          { path: 'client_id', problem: `series ${member.id} belongs to another client` },
+        ])
+      if (member.date < series.starts_on || member.date > series.ends_on)
+        throw refuse.invalidInput([
+          {
+            path: 'series_date',
+            problem: `outside the series (${series.starts_on} to ${series.ends_on}); extend it with external_updateAppointmentSeries first`,
+          },
+        ])
+    }
     const at = resolveTime(input.starts_at)
     return writeWithoutClashes(
       'book',
-      [{ date: at.date, time: at.time, span: spanOf(at.instant, minutes) }],
-      async (placed) => {
+      [
+        {
+          date: at.date,
+          time: at.time,
+          span: spanOf(at.instant, minutes),
+          series: member,
+        },
+      ],
+      async ([placed]) => {
         const [appointment] = await db
           .insert(appointments)
-          .values(
-            placed.map(({ span }) => ({
-              client_id: input.client_id,
-              service_id: input.service_id,
-              starts_at: span.starts_at,
-              ends_at: span.ends_at,
-              mode: input.mode,
-              price: input.price ?? classPrice(service, minutes),
-              notes: input.notes,
-            })),
-          )
+          .values({
+            client_id: input.client_id,
+            service_id: input.service_id,
+            starts_at: placed.span.starts_at,
+            ends_at: placed.span.ends_at,
+            mode: input.mode,
+            price: input.price ?? classPrice(service, minutes),
+            notes: input.notes,
+            series_id: member?.id,
+            series_date: member?.date,
+          })
           .returning()
         return appointment
       },
     )
+  },
+})
+
+const weekdayInput = z.enum(weekdays)
+const clockInput = clock.describe(
+  "Owner's clock time in America/Santiago, 24h, e.g. 17:00",
+)
+const dateInput = localDate.describe('A date in America/Santiago, e.g. 2026-11-17')
+const weeklyInput = z
+  .array(z.object({ day: weekdayInput, time: clockInput }).strict())
+  .min(1)
+  .max(3)
+  .refine((slots) => new Set(slots.map((slot) => slot.day)).size === slots.length, {
+    message: 'Each weekday may appear once; two classes on one day are two series',
+  })
+  .describe('The weekdays and clock times the Owner named')
+
+const createAppointmentSeriesInput = z
+  .object({
+    client_id: z.number().int(),
+    service_id: z.number().int(),
+    weekly: weeklyInput,
+    from: dateInput.describe('First date a class may fall on, inclusive'),
+    end: z
+      .union([
+        z
+          .object({
+            until: dateInput.describe('Last date a class may fall on, inclusive'),
+          })
+          .strict(),
+        z
+          .object({
+            count: z
+              .number()
+              .int()
+              .positive()
+              .describe('Classes to book; skipped dates do not count'),
+          })
+          .strict(),
+      ])
+      .describe(
+        'Required. Ask the Owner when they gave neither a date nor a number of classes',
+      ),
+    mode: z.enum(['online', 'in_person']),
+    duration_minutes: z.number().int().positive().optional(),
+    price: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('Whole CLP per class; defaults from the service'),
+    skip: z
+      .array(dateInput)
+      .optional()
+      .describe('Dates to leave out; after a conflict, pass retry.skip from the refusal'),
+  })
+  .strict()
+  .refine((input) => !('until' in input.end) || input.end.until >= input.from, {
+    message: 'end.until is before from',
+    path: ['end', 'until'],
+  })
+
+const updateAppointmentSeriesInput = z
+  .object({
+    id: z.number().int(),
+    from: dateInput
+      .optional()
+      .describe('Changes apply to classes on or after this date; default today'),
+    until: dateInput
+      .optional()
+      .describe(
+        'New last date. Earlier cancels the classes after it; later reopens the classes an earlier end cancelled and books new ones',
+      ),
+    weekly: weeklyInput
+      .optional()
+      .describe('The same weekdays as the series, with new clock times'),
+    duration_minutes: z.number().int().positive().optional(),
+    mode: z.enum(['online', 'in_person']).optional(),
+    price: z.number().int().nonnegative().optional().describe('Whole CLP per class'),
+    skip: z
+      .array(dateInput)
+      .optional()
+      .describe('Dates to leave as they are; after a conflict, pass retry.skip'),
+  })
+  .strict()
+  .refine(
+    ({ until, weekly, duration_minutes, mode, price }) =>
+      [until, weekly, duration_minutes, mode, price].some(
+        (value) => value !== undefined,
+      ),
+    { message: 'Nothing to change: pass until, weekly, duration_minutes, mode or price' },
+  )
+
+const seriesIdInput = z.object({ id: z.number().int() }).strict()
+
+const seriesClass = z.object({
+  id: z.number().int(),
+  series_date: z.string(),
+  starts_at: timestamp,
+  starts_local: z.string().describe('e.g. martes 17 de noviembre, 17:00'),
+  ends_local: z.string(),
+  status: z.enum(['scheduled', 'completed', 'cancelled', 'no_show']),
+})
+
+const seriesRecord = z.object({
+  id: z.number().int(),
+  client_id: z.number().int(),
+  client_name: z.string(),
+  service_id: z.number().int(),
+  weekly: z.array(z.object({ day: weekdayInput, time: z.string() })),
+  duration_minutes: z.number().int(),
+  mode: z.enum(['online', 'in_person']),
+  price: clp.describe('Whole CLP per class'),
+  starts_on: z.string(),
+  ends_on: z.string(),
+  rule_local: z
+    .string()
+    .describe(
+      'The rule as the Owner says it, e.g. todos los martes a las 17:00, del 29 de septiembre al 29 de diciembre',
+    ),
+  deleted_at: deletedAt,
+  classes: z.array(seriesClass).describe('Live classes, earliest first'),
+})
+
+const updatedSeriesRecord = seriesRecord.extend({
+  changed: z.number().int().describe('Classes re-timed or edited'),
+  added: z.number().int().describe('New classes booked'),
+  cancelled: z.number().int().describe('Classes cancelled because the series ends earlier'),
+  reopened: z
+    .number()
+    .int()
+    .describe('Classes an earlier end had cancelled, scheduled again'),
+  kept_paid: z
+    .array(seriesClass)
+    .describe('Classes in range left as they were because they are paid'),
+})
+
+type Member = typeof appointments.$inferSelect & {
+  series_date: LocalDate
+  paid: boolean
+  cancelled_by_end: boolean
+}
+
+/**
+ * A series' live classes, each with whether a live payment settles it and
+ * whether the series' last end cancelled it: an end stamps the series and the
+ * classes it cancels with one now(). Timestamps compare in SQL, since a JS
+ * Date drops the microseconds.
+ */
+async function seriesMembers(seriesId: number): Promise<Array<Member>> {
+  const rows = await db
+    .select()
+    .from(appointments)
+    .where(and(eq(appointments.series_id, seriesId), isNull(appointments.deleted_at)))
+    .orderBy(appointments.series_date, appointments.starts_at)
+  const ids = rows.map((row) => row.id)
+  const paid = await db
+    .select({ id: payments.appointment_id })
+    .from(payments)
+    .where(and(inArray(payments.appointment_id, ids), isNull(payments.deleted_at)))
+  const ended = await db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .innerJoin(appointmentSeries, eq(appointmentSeries.id, appointments.series_id))
+    .where(
+      and(
+        eq(appointments.series_id, seriesId),
+        eq(appointments.status, 'cancelled'),
+        eq(appointments.updated_at, appointmentSeries.updated_at),
+      ),
+    )
+  const paidIds = new Set(paid.map((row) => row.id))
+  const endedIds = new Set(ended.map((row) => row.id))
+  return rows.map((row) => ({
+    ...row,
+    series_date: localDate.parse(row.series_date),
+    paid: paidIds.has(row.id),
+    cancelled_by_end: endedIds.has(row.id),
+  }))
+}
+
+async function seriesWeekly(seriesId: number): Promise<Array<WeeklySlot>> {
+  const days = await db
+    .select()
+    .from(appointmentSeriesDays)
+    .where(eq(appointmentSeriesDays.series_id, seriesId))
+  return inWeekOrder(
+    days.map((row) => ({
+      day: weekdayInput.parse(weekdays[row.weekday]),
+      time: clock.parse(row.starts_time.slice(0, 5)),
+    })),
+  )
+}
+
+function toSeriesClass(member: typeof appointments.$inferSelect) {
+  return {
+    id: member.id,
+    series_date: member.series_date ?? '',
+    starts_at: member.starts_at,
+    starts_local: describeSantiagoTime(member.starts_at),
+    ends_local: describeSantiagoTime(member.ends_at),
+    status: member.status,
+  }
+}
+
+/** The series as the model reads it: the rule, in words too, and its live classes. */
+async function readSeries(id: number) {
+  const [row] = await db
+    .select({ series: appointmentSeries, client_name: clients.name })
+    .from(appointmentSeries)
+    .innerJoin(
+      clients,
+      and(
+        eq(clients.id, appointmentSeries.client_id),
+        eq(clients.owner_id, appointmentSeries.owner_id),
+      ),
+    )
+    .where(eq(appointmentSeries.id, id))
+  if (!row) return undefined
+  const weekly = await seriesWeekly(id)
+  const members = await seriesMembers(id)
+  return {
+    ...row.series,
+    client_name: row.client_name,
+    weekly,
+    rule_local: describeRule(
+      weekly,
+      localDate.parse(row.series.starts_on),
+      localDate.parse(row.series.ends_on),
+    ),
+    classes: members.map(toSeriesClass),
+  }
+}
+
+export const createAppointmentSeries = writeTool({
+  name: 'createAppointmentSeries',
+  entity: 'series',
+  description:
+    'Book a weekly series: every listed weekday at its clock time, from a date until an end date or a number of classes. All-or-nothing: on a conflict nothing is booked and every clashing date is reported. Use this for any repeating appointment instead of a loop of createAppointment; two weekdays for one client and service are one series.',
+  guide: {
+    does: 'Agenda clases que se repiten cada semana, con el mismo cliente, servicio y hora.',
+    asks: {
+      client_id: '¿Para quién son las clases?',
+      service_id: '¿Qué servicio es?',
+      weekly: '¿Qué días y a qué hora?',
+      from: '¿Desde qué fecha?',
+      end: TEMPLATES.askEnd,
+      mode: '¿Son online o presenciales?',
+    },
+    wont: 'No elige días ni horas: tú los dices. Si una fecha choca, no agenda ninguna y te dice cuáles.',
+  },
+  input: createAppointmentSeriesInput,
+  output: seriesRecord,
+  run: async (input) => {
+    const service = await liveService(input.service_id)
+    if (!service) throw refuse.notFound('service', input.service_id)
+    const minutes = input.duration_minutes ?? service.duration_minutes
+    if (minutes == null) throw refuse.askDuration(service.name)
+    const skip = input.skip ?? []
+    const plan = planSeries(input.weekly, minutes, input.from, input.end, skip)
+    if (plan.occurrences.length === 0)
+      throw refuse.invalidInput([
+        {
+          path: 'weekly',
+          problem: 'no class falls between from and the end; check the weekdays and dates',
+        },
+      ])
+    const price = input.price ?? classPrice(service, minutes)
+    return writeWithoutClashes(
+      'book_series',
+      plan.occurrences,
+      async (placed) => {
+        const [series] = await db
+          .insert(appointmentSeries)
+          .values({
+            client_id: input.client_id,
+            service_id: input.service_id,
+            mode: input.mode,
+            duration_minutes: minutes,
+            price,
+            starts_on: input.from,
+            ends_on: plan.ends_on,
+          })
+          .returning()
+        await db.insert(appointmentSeriesDays).values(
+          input.weekly.map((slot) => ({
+            series_id: series.id,
+            weekday: weekdays.indexOf(slot.day),
+            starts_time: slot.time,
+          })),
+        )
+        await db.insert(appointments).values(
+          placed.map((each) => ({
+            client_id: input.client_id,
+            service_id: input.service_id,
+            starts_at: each.span.starts_at,
+            ends_at: each.span.ends_at,
+            mode: input.mode,
+            price,
+            series_id: series.id,
+            series_date: each.date,
+          })),
+        )
+        return readSeries(series.id)
+      },
+      { priorSkip: skip },
+    )
+  },
+})
+
+/** What one class of a series change turns into. */
+type ClassChange = Wanted & {
+  member: Member | null
+  reopen: boolean
+}
+
+export const updateAppointmentSeries = writeTool({
+  name: 'updateAppointmentSeries',
+  entity: 'series',
+  description:
+    'Change a series from a date onward. An earlier until ends it: the classes after that date are cancelled. A later until reopens the classes an earlier end cancelled and books new dates past the last class. weekly (same days, new times), duration_minutes, mode and price change the classes from `from` on. Only future scheduled unpaid classes change; paid ones come back in kept_paid. Days cannot change: create the new series first, then end this one. To change one class, use updateAppointment on it.',
+  guide: {
+    does: 'Cambia o termina unas clases semanales desde una fecha en adelante.',
+    wont: 'No toca clases pasadas, realizadas ni pagadas, y no cambia los días de la semana.',
+  },
+  input: updateAppointmentSeriesInput,
+  output: updatedSeriesRecord,
+  before: ({ id }) => readSeries(id),
+  run: async (input) => {
+    const series = await liveSeries(input.id)
+    if (!series) return undefined
+    if (input.until && input.until < series.starts_on)
+      throw refuse.invalidInput([
+        {
+          path: 'until',
+          problem: `before the series starts (${series.starts_on}); to remove a series booked by mistake use external_softDeleteAppointmentSeries`,
+        },
+      ])
+    const weekly = await seriesWeekly(series.id)
+    if (
+      input.weekly &&
+      inWeekOrder(input.weekly).map((slot) => slot.day).join() !==
+        weekly.map((slot) => slot.day).join()
+    )
+      throw refuse.invalidInput([
+        {
+          path: 'weekly',
+          problem:
+            'the weekdays of a series cannot change; create a new series with the new days, then end this one with until',
+        },
+      ])
+    const now = new Date()
+    const today = santiagoDateOf(now)
+    const from = input.from && input.from > today ? input.from : today
+    const skipped = new Set(input.skip ?? [])
+    const endsOn = localDate.parse(series.ends_on)
+    const until = input.until ?? endsOn
+    const members = await seriesMembers(series.id)
+    const upcoming = (member: Member) =>
+      member.status === 'scheduled' &&
+      member.starts_at > now &&
+      !skipped.has(member.series_date)
+
+    const pastEnd = members.filter(
+      (member) => member.series_date > until && upcoming(member),
+    )
+    const cancel = pastEnd.filter((member) => !member.paid)
+
+    const times = new Map((input.weekly ?? weekly).map((slot) => [slot.day, slot.time]))
+    const minutes = input.duration_minutes ?? series.duration_minutes
+    const retime = input.weekly !== undefined || input.duration_minutes !== undefined
+    const edits = retime || input.mode !== undefined || input.price !== undefined
+    const inRange = edits
+      ? members.filter(
+          (member) =>
+            member.series_date >= from &&
+            member.series_date <= until &&
+            upcoming(member),
+        )
+      : []
+    const edit = inRange.filter((member) => !member.paid)
+
+    const reopen =
+      until > endsOn
+        ? members.filter(
+            (member) =>
+              member.series_date > endsOn &&
+              member.series_date <= until &&
+              member.cancelled_by_end &&
+              member.starts_at > now &&
+              !member.paid &&
+              !skipped.has(member.series_date),
+          )
+        : []
+    const lastClass = members.reduce(
+      (latest, member) => (member.series_date > latest ? member.series_date : latest),
+      endsOn,
+    )
+    const added =
+      until > lastClass
+        ? planSeries(
+            input.weekly ?? weekly,
+            minutes,
+            addDays(lastClass, 1),
+            { until },
+            [...skipped],
+          ).occurrences
+        : []
+
+    const kept = (member: Member): ClassChange => ({
+      date: member.series_date,
+      time: santiagoClockOf(member.starts_at),
+      span: { starts_at: member.starts_at, ends_at: member.ends_at },
+      member,
+      reopen: false,
+    })
+    const moved = (member: Member): ClassChange =>
+      retime && member.series_date >= from
+        ? {
+            ...occurrenceOf(
+              member.series_date,
+              times.get(weekdayOf(member.series_date)) ?? santiagoClockOf(member.starts_at),
+              minutes,
+            ),
+            member,
+            reopen: false,
+          }
+        : kept(member)
+    const changes: Array<ClassChange> = [
+      ...(retime ? edit.map(moved) : []),
+      ...reopen.map((member) => ({ ...moved(member), reopen: true })),
+      ...added.map((occurrence) => ({
+        ...occurrence,
+        series: { id: series.id, date: occurrence.date },
+        member: null,
+        reopen: false,
+      })),
+    ]
+
+    return writeWithoutClashes(
+      'change_series',
+      changes,
+      async (placed) => {
+        if (cancel.length)
+          await db
+            .update(appointments)
+            .set({ status: 'cancelled', updated_at: sql`now()` })
+            .where(inArray(appointments.id, cancel.map((member) => member.id)))
+        const fields = {
+          ...(input.mode !== undefined && { mode: input.mode }),
+          ...(input.price !== undefined && { price: input.price }),
+        }
+        if (!retime && edit.length)
+          await db
+            .update(appointments)
+            .set({ ...fields, updated_at: sql`now()` })
+            .where(inArray(appointments.id, edit.map((member) => member.id)))
+        for (const change of placed) {
+          if (!change.member) continue
+          await db
+            .update(appointments)
+            .set({
+              starts_at: change.span.starts_at,
+              ends_at: change.span.ends_at,
+              ...(change.member.series_date >= from && fields),
+              ...(change.reopen && { status: 'scheduled' as const }),
+              updated_at: sql`now()`,
+            })
+            .where(eq(appointments.id, change.member.id))
+        }
+        const fresh = placed.filter((change) => !change.member)
+        if (fresh.length)
+          await db.insert(appointments).values(
+            fresh.map((change) => ({
+              client_id: series.client_id,
+              service_id: series.service_id,
+              starts_at: change.span.starts_at,
+              ends_at: change.span.ends_at,
+              mode: input.mode ?? series.mode,
+              price: input.price ?? series.price,
+              series_id: series.id,
+              series_date: change.date,
+            })),
+          )
+        for (const slot of input.weekly ?? [])
+          await db
+            .update(appointmentSeriesDays)
+            .set({ starts_time: slot.time })
+            .where(
+              and(
+                eq(appointmentSeriesDays.series_id, series.id),
+                eq(appointmentSeriesDays.weekday, weekdays.indexOf(slot.day)),
+              ),
+            )
+        await db
+          .update(appointmentSeries)
+          .set({
+            ends_on: until,
+            duration_minutes: minutes,
+            ...fields,
+            updated_at: sql`now()`,
+          })
+          .where(eq(appointmentSeries.id, series.id))
+        const record = await readSeries(series.id)
+        return (
+          record && {
+            ...record,
+            changed: edit.length,
+            added: fresh.length,
+            cancelled: cancel.length,
+            reopened: reopen.length,
+            kept_paid: [...pastEnd, ...inRange]
+              .filter((member) => member.paid)
+              .map(toSeriesClass),
+          }
+        )
+      },
+      {
+        ignore: changes.flatMap((change) => (change.member ? [change.member.id] : [])),
+        priorSkip: input.skip ?? [],
+      },
+    )
+  },
+})
+
+export const softDeleteAppointmentSeries = writeTool({
+  name: 'softDeleteAppointmentSeries',
+  entity: 'series',
+  description:
+    'Soft delete a series booked by mistake, with its future scheduled unpaid classes. Past, completed and paid classes stay. Undo with restoreAppointmentSeries. To end a series that did happen, use updateAppointmentSeries with until.',
+  guide: {
+    does: 'Borra unas clases semanales que se agendaron por error.',
+    wont: 'No borra clases pasadas, realizadas ni pagadas.',
+  },
+  input: seriesIdInput,
+  output: seriesRecord,
+  before: ({ id }) => readSeries(id),
+  run: async ({ id }) => {
+    const [series] = await db
+      .update(appointmentSeries)
+      .set({ deleted_at: sql`now()` })
+      .where(and(eq(appointmentSeries.id, id), isNull(appointmentSeries.deleted_at)))
+      .returning()
+    if (!series) return undefined
+    await db
+      .update(appointments)
+      .set({ deleted_at: sql`now()` })
+      .where(
+        and(
+          eq(appointments.series_id, id),
+          isNull(appointments.deleted_at),
+          eq(appointments.status, 'scheduled'),
+          gt(appointments.starts_at, sql`now()`),
+          sql`not exists (
+            select 1 from ${payments} p
+            where p.appointment_id = ${appointments.id} and p.deleted_at is null
+          )`,
+        ),
+      )
+    return readSeries(id)
+  },
+})
+
+export const restoreAppointmentSeries = writeTool({
+  name: 'restoreAppointmentSeries',
+  entity: 'series',
+  description:
+    'Restore a soft-deleted series and exactly the classes its deletion removed. All-or-nothing: if any class time now clashes, nothing is restored and every clashing date is reported; pass retry.skip to restore the rest.',
+  guide: { does: 'Recupera unas clases semanales borradas.' },
+  input: seriesIdInput.extend({
+    skip: z
+      .array(dateInput)
+      .optional()
+      .describe('Dates to leave deleted; after a conflict, pass retry.skip'),
+  }),
+  output: seriesRecord,
+  before: ({ id }) => readSeries(id),
+  run: async ({ id, skip = [] }) => {
+    const [series] = await db
+      .select()
+      .from(appointmentSeries)
+      .where(eq(appointmentSeries.id, id))
+    if (!series) return undefined
+    if (!series.deleted_at) return readSeries(id)
+    // The deletion stamped the series and its classes with one now().
+    const removed = await db
+      .select()
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.series_id, id),
+          sql`${appointments.deleted_at} = (
+            select s.deleted_at from ${appointmentSeries} s where s.id = ${id}
+          )`,
+        ),
+      )
+    const skipped = new Set(skip)
+    const back = removed
+      .map((member) => ({ member, date: localDate.parse(member.series_date) }))
+      .filter(({ date }) => !skipped.has(date))
+    return writeWithoutClashes(
+      'restore_series',
+      back.map(({ member, date }) => ({
+        date,
+        time: santiagoClockOf(member.starts_at),
+        span: { starts_at: member.starts_at, ends_at: member.ends_at },
+        series: { id, date },
+      })),
+      async () => {
+        await db
+          .update(appointmentSeries)
+          .set({ deleted_at: null })
+          .where(eq(appointmentSeries.id, id))
+        if (back.length)
+          await db
+            .update(appointments)
+            .set({ deleted_at: null })
+            .where(inArray(appointments.id, back.map(({ member }) => member.id)))
+        return readSeries(id)
+      },
+      { ignore: removed.map((member) => member.id), priorSkip: skip },
+    )
+  },
+})
+
+export const findAppointmentSeries = readTool({
+  name: 'findAppointmentSeries',
+  description:
+    "Find live series, optionally one client's. rule_local is the rule as the Owner says it; use it when talking to the Owner.",
+  guide: { does: 'Muestra las clases semanales de un cliente.' },
+  input: z.object({ client_id: z.number().int().optional() }).strict(),
+  output: z.array(seriesRecord),
+  run: async ({ client_id }) => {
+    const rows = await db
+      .select({ id: appointmentSeries.id })
+      .from(appointmentSeries)
+      .where(
+        and(
+          isNull(appointmentSeries.deleted_at),
+          client_id !== undefined
+            ? eq(appointmentSeries.client_id, client_id)
+            : undefined,
+        ),
+      )
+      .orderBy(appointmentSeries.starts_on)
+    const found = []
+    for (const { id } of rows) {
+      const record = await readSeries(id)
+      if (record) found.push(record)
+    }
+    return found
   },
 })
 

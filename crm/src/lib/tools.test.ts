@@ -1,7 +1,7 @@
 import { generateTypeStubs, toolsToBindings } from '@tanstack/ai-code-mode'
 import { eq, inArray } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
-import { aroundEach, beforeAll, beforeEach, expect, test } from 'vitest'
+import { aroundEach, beforeAll, beforeEach, describe, expect, test } from 'vitest'
 import { db, withOwnerTxn } from '#/db'
 import { chatTools } from './chat-tools'
 import { readRefusal } from './refusal'
@@ -18,23 +18,28 @@ import {
 } from '#/db/schema'
 import {
   createAppointment,
+  createAppointmentSeries,
   createClient,
   createPayment,
   createService,
+  findAppointmentSeries,
   findAppointments,
   findClients,
   findPayments,
   findServices,
   listAuditLog,
   restoreAppointment,
+  restoreAppointmentSeries,
   restoreClient,
   restorePayment,
   restoreService,
   softDeleteAppointment,
+  softDeleteAppointmentSeries,
   softDeleteClient,
   softDeletePayment,
   softDeleteService,
   updateAppointment,
+  updateAppointmentSeries,
   updateClient,
   updateOwnerProfile,
   updatePayment,
@@ -1321,6 +1326,11 @@ const crmTools = [
   updateAppointment,
   softDeleteAppointment,
   restoreAppointment,
+  createAppointmentSeries,
+  findAppointmentSeries,
+  updateAppointmentSeries,
+  softDeleteAppointmentSeries,
+  restoreAppointmentSeries,
   createPayment,
   findPayments,
   updatePayment,
@@ -1365,5 +1375,325 @@ test("missing service fields become the Owner's questions, in field order", asyn
     kind: 'ask',
     say: '¿Cuánto cobras? ¿Cobras por hora o un precio fijo?',
     needs: ['price', 'unit'],
+  })
+})
+
+async function pianoFor(name: string) {
+  const client = await createClient.execute({ name })
+  const service = await createService.execute({
+    name: 'Piano a domicilio',
+    price: 35000,
+    unit: 'flat',
+    duration_minutes: 60,
+  })
+  return { client, service }
+}
+
+describe('series', () => {
+  test('a weekly series books every class, tied to its rule date, in one audited write', async () => {
+    const { client, service } = await pianoFor('Pedro Soto')
+
+    const series = await createAppointmentSeries.execute({
+      client_id: client.id,
+      service_id: service.id,
+      weekly: [{ day: 'tuesday', time: '17:00' }],
+      from: '2026-09-29',
+      end: { until: '2026-12-31' },
+      mode: 'in_person',
+    })
+
+    expect(series).toEqual(
+      expect.objectContaining({
+        client_name: 'Pedro Soto',
+        price: 35000,
+        ends_on: '2026-12-31',
+        rule_local: 'todos los martes a las 17:00, del 29 de septiembre al 31 de diciembre',
+        weekly: [{ day: 'tuesday', time: '17:00' }],
+      }),
+    )
+    expect(series.classes).toHaveLength(14)
+    const booked = await findAppointments.execute({ client_id: client.id })
+    expect(booked.map((row) => [row.series_id, row.series_date, row.starts_local])).toContainEqual([
+      series.id,
+      '2026-11-17',
+      'martes 17 de noviembre, 17:00',
+    ])
+    expect(await listAuditLog.execute({ entity: 'series' })).toEqual([
+      expect.objectContaining({
+        tool_name: 'createAppointmentSeries',
+        entity_id: series.id,
+        ok: true,
+      }),
+    ])
+    expect(await findAppointmentSeries.execute({ client_id: client.id })).toEqual([
+      expect.objectContaining({ id: series.id }),
+    ])
+  })
+
+  test('without an end the Owner is asked, and nothing is written', async () => {
+    const { client, service } = await pianoFor('Pedro')
+
+    const refusal = await refusalOf(
+      // @ts-expect-error exercising runtime validation
+      createAppointmentSeries.execute({
+        client_id: client.id,
+        service_id: service.id,
+        weekly: [{ day: 'thursday', time: '18:00' }],
+        from: '2026-10-01',
+        mode: 'online',
+      }),
+    )
+
+    expect(refusal).toEqual({
+      kind: 'ask',
+      say: '¿Hasta cuándo agendo estas clases? Puede ser una fecha o un número de clases.',
+      needs: ['end'],
+    })
+    expect(await listAuditLog.execute({ entity: 'series' })).toEqual([])
+  })
+
+  test("a malformed time is the model's to fix, silently", async () => {
+    const { client, service } = await pianoFor('Pedro')
+
+    const refusal = await refusalOf(
+      createAppointmentSeries.execute({
+        client_id: client.id,
+        service_id: service.id,
+        weekly: [{ day: 'monday', time: '5pm' }],
+        from: '2026-10-05',
+        end: { count: 4 },
+        mode: 'online',
+      }),
+    )
+
+    expect(refusal).toEqual(
+      expect.objectContaining({
+        kind: 'invalid_input',
+        issues: [expect.objectContaining({ path: 'weekly.0.time' })],
+      }),
+    )
+    expect(refusal).not.toHaveProperty('say')
+  })
+
+  test('the days of a series cannot change', async () => {
+    const { client, service } = await pianoFor('Pedro')
+    const series = await createAppointmentSeries.execute({
+      client_id: client.id,
+      service_id: service.id,
+      weekly: [{ day: 'tuesday', time: '17:00' }],
+      from: '2036-09-30',
+      end: { count: 4 },
+      mode: 'online',
+    })
+
+    expect(
+      await refusalOf(
+        updateAppointmentSeries.execute({
+          id: series.id,
+          weekly: [{ day: 'wednesday', time: '17:00' }],
+        }),
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        kind: 'invalid_input',
+        issues: [expect.objectContaining({ path: 'weekly' })],
+      }),
+    )
+  })
+
+  test('a later time from a date on re-times only those classes; a clash changes nothing', async () => {
+    const { client, service } = await pianoFor('Pedro')
+    const rosa = await createClient.execute({ name: 'Rosa' })
+    const series = await createAppointmentSeries.execute({
+      client_id: client.id,
+      service_id: service.id,
+      weekly: [{ day: 'tuesday', time: '17:00' }],
+      from: '2036-09-30',
+      end: { count: 4 },
+      mode: 'online',
+    })
+    await createAppointment.execute({
+      client_id: rosa.id,
+      service_id: service.id,
+      starts_at: '2036-10-21T18:30',
+      mode: 'online',
+    })
+
+    const refusal = await refusalOf(
+      updateAppointmentSeries.execute({
+        id: series.id,
+        from: '2036-10-07',
+        weekly: [{ day: 'tuesday', time: '18:00' }],
+      }),
+    )
+    expect(refusal).toEqual(
+      expect.objectContaining({
+        kind: 'conflict',
+        say: 'No cambié ninguna clase porque una fecha choca:\n- martes 21 de octubre, 18:00: ya tienes a Rosa (18:30–19:30)',
+        of: 3,
+        retry: { skip: ['2036-10-21'] },
+      }),
+    )
+
+    const changed = await updateAppointmentSeries.execute({
+      id: series.id,
+      from: '2036-10-07',
+      weekly: [{ day: 'tuesday', time: '18:00' }],
+      skip: ['2036-10-21'],
+    })
+    expect(changed.changed).toBe(2)
+    expect(changed.classes.map((each) => each.starts_local)).toEqual([
+      'martes 30 de septiembre, 17:00',
+      'martes 7 de octubre, 18:00',
+      'martes 14 de octubre, 18:00',
+      'martes 21 de octubre, 17:00',
+    ])
+  })
+
+  test('a clashing date can join the series at another hour', async () => {
+    const { client, service } = await pianoFor('Pedro')
+    const series = await createAppointmentSeries.execute({
+      client_id: client.id,
+      service_id: service.id,
+      weekly: [{ day: 'tuesday', time: '17:00' }],
+      from: '2036-09-30',
+      end: { count: 3 },
+      mode: 'online',
+      skip: ['2036-10-07'],
+    })
+
+    const moved = await createAppointment.execute({
+      client_id: client.id,
+      service_id: service.id,
+      starts_at: '2036-10-07T18:00',
+      mode: 'online',
+      series_id: series.id,
+      series_date: '2036-10-07',
+    })
+    expect(moved).toEqual(
+      expect.objectContaining({ series_id: series.id, series_date: '2036-10-07' }),
+    )
+
+    const again = await refusalOf(
+      createAppointment.execute({
+        client_id: client.id,
+        service_id: service.id,
+        starts_at: '2036-10-07T20:00',
+        mode: 'online',
+        series_id: series.id,
+        series_date: '2036-10-07',
+      }),
+    )
+    expect(again).toEqual(
+      expect.objectContaining({
+        kind: 'conflict',
+        dates: [expect.objectContaining({ problem: 'taken', date: '2036-10-07' })],
+      }),
+    )
+    expect(
+      await refusalOf(
+        createAppointment.execute({
+          client_id: client.id,
+          service_id: service.id,
+          starts_at: '2036-10-08T18:00',
+          mode: 'online',
+          series_id: series.id,
+          series_date: '2036-10-08',
+        }),
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        kind: 'invalid_input',
+        issues: [expect.objectContaining({ path: 'series_date' })],
+      }),
+    )
+  })
+
+  test("deleting a client with a series names the series' rule", async () => {
+    const { client, service } = await pianoFor('Ana')
+    await createAppointmentSeries.execute({
+      client_id: client.id,
+      service_id: service.id,
+      weekly: [
+        { day: 'thursday', time: '10:00' },
+        { day: 'tuesday', time: '10:00' },
+      ],
+      from: '2036-09-30',
+      end: { count: 4 },
+      mode: 'online',
+    })
+
+    expect(await refusalOf(softDeleteClient.execute({ id: client.id }))).toEqual(
+      expect.objectContaining({
+        kind: 'blocked',
+        say: 'Ana tiene 4 citas agendadas desde hoy, la primera el martes 30 de septiembre a las 10:00, entre ellas sus clases de todos los martes a las 10:00 y los jueves a las 10:00. Hay que cancelarlas o borrarlas antes de borrar a Ana.',
+      }),
+    )
+  })
+
+  test('deleting a series removes its future unpaid classes; restoring brings exactly those back', async () => {
+    const { client, service } = await pianoFor('Pedro')
+    const series = await createAppointmentSeries.execute({
+      client_id: client.id,
+      service_id: service.id,
+      weekly: [{ day: 'tuesday', time: '17:00' }],
+      from: '2036-09-30',
+      end: { count: 3 },
+      mode: 'online',
+    })
+    const [paid] = series.classes
+    await createPayment.execute({
+      client_id: client.id,
+      appointment_id: paid.id,
+      amount: 35000,
+    })
+
+    const deleted = await softDeleteAppointmentSeries.execute({ id: series.id })
+    expect(deleted.deleted_at).not.toBeNull()
+    expect(deleted.classes.map((each) => each.id)).toEqual([paid.id])
+    expect(await findAppointmentSeries.execute({})).toEqual([])
+
+    const restored = await restoreAppointmentSeries.execute({ id: series.id })
+    expect(restored.deleted_at).toBeNull()
+    expect(restored.classes.map((each) => each.id)).toEqual(
+      series.classes.map((each) => each.id),
+    )
+  })
+
+  test('restoring a series whose time was taken since restores nothing and lists it', async () => {
+    const { client, service } = await pianoFor('Pedro')
+    const rosa = await createClient.execute({ name: 'Rosa' })
+    const series = await createAppointmentSeries.execute({
+      client_id: client.id,
+      service_id: service.id,
+      weekly: [{ day: 'tuesday', time: '17:00' }],
+      from: '2036-09-30',
+      end: { count: 3 },
+      mode: 'online',
+    })
+    await softDeleteAppointmentSeries.execute({ id: series.id })
+    await createAppointment.execute({
+      client_id: rosa.id,
+      service_id: service.id,
+      starts_at: '2036-10-07T17:30',
+      mode: 'online',
+    })
+
+    expect(await refusalOf(restoreAppointmentSeries.execute({ id: series.id }))).toEqual(
+      expect.objectContaining({
+        kind: 'conflict',
+        say: 'No restauré las clases porque una fecha choca:\n- martes 7 de octubre, 17:00: ya tienes a Rosa (17:30–18:30)',
+        of: 3,
+        retry: { skip: ['2036-10-07'] },
+      }),
+    )
+    const rest = await restoreAppointmentSeries.execute({
+      id: series.id,
+      skip: ['2036-10-07'],
+    })
+    expect(rest.classes.map((each) => each.series_date)).toEqual([
+      '2036-09-30',
+      '2036-10-14',
+    ])
   })
 })
