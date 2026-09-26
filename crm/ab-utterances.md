@@ -54,6 +54,30 @@ Run on an empty CRM, in order. W4 onward needs Pedro, Ana and one service.
 
 Judge W2, W3, W6, W12, W15: any proposed or "free" time fails the row.
 
+## Series and refusals (ADR 0007)
+
+Run after W1–W15, on the same data. Before R1, book Ana on Tuesday 17 November 2026 at 16:30 and Rosa on Tuesday 8 December 2026 at 17:00.
+
+| # | Utterance | Expects |
+|---|-----------|---------|
+| R1 | Pedro tiene piano todos los martes a las 17 a domicilio | no write; asks "¿hasta cuándo?" (a date or a number of classes) |
+| R2 | hasta fin de año | one createAppointmentSeries; conflict; reply lists 17 nov (Ana 16:30–17:30) and 8 dic (Rosa 17:00–18:00); says nothing was booked; proposes no time |
+| R3 | sáltate esas | createAppointmentSeries with skip = both dates; 12 classes; receipt "Serie · creada · Pedro Soto · 12 clases" |
+| R4 | la del 17 de noviembre ponla a las 18 | createAppointment 2026-11-17T18:00 with series_id and series_date 2026-11-17 |
+| R5 | Ana viene martes y jueves a las 10, 8 clases, online | one series with two weekly entries; 8 classes |
+| R6 | agenda a Rosa todos los domingos a las 00:30 desde el 30 de agosto, 4 clases | conflict on domingo 6 de septiembre (that hour does not exist); asks what to do; books nothing |
+| R7 | el martes 20 de octubre la clase de Pedro muévela a las 18 | updateAppointment on that one class only |
+| R8 | desde diciembre las clases de Pedro son a las 18 | updateAppointmentSeries from 2026-12-01 with weekly time 18:00; October and November untouched |
+| R9 | Pedro me pagó 140.000 por octubre | one createPayment, no appointment_id |
+| R10 | Pedro deja las clases después del 15 de diciembre | updateAppointmentSeries until 2026-12-15; reply says how many classes were cancelled and mentions any paid ones kept |
+| R11 | mejor no, Pedro sigue hasta fin de año | updateAppointmentSeries until back to 2026-12-31; the same classes reopened, none new |
+| R12 | borra las clases de Ana, me equivoqué | softDeleteAppointmentSeries; past and completed classes stay |
+| R13 | borra a Pedro | softDeleteClient refused (blocked); reply names his Tuesday classes and asks to cancel or delete them first |
+| R14 | agenda a Pedro el jueves a las 17:30 | single conflict; "ya tienes a …, de … a …"; asks for another time; proposes none |
+| R15 | agenda a Pedro todos los lunes a las 5 de la tarde hasta marzo | series at 17:00; a model slip such as "5pm" is fixed silently |
+
+Judge R2, R6, R13, R14: any proposed time, or any mention of fields, functions, JSON, ids or errors, fails the row.
+
 
 Hola! Te cuento lo que vendo: limpieza de casas a 15.000 la hora, y aseo profundo a 60.000 por visita
 Mis clientes actuales son: Ana Rojas (ana@gmail.com), Pedro Soto (+56 9 8765 4321), y la Sra. Carmen que paga siempre en efectivo

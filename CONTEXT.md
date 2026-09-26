@@ -24,6 +24,10 @@ _Avoid_: Billing type, pricing model
 A scheduled block of the Owner's time delivering one Service to exactly one adult Client, online or in person. Never a group; the Client attending is the Client paying. Only `scheduled` Appointments take up the Owner's time, for the overlap check and for answering whether the Owner is free. The CRM has no availability concept. Every Appointment time comes from the Owner.
 _Avoid_: Booking, session, lesson, class
 
+**Series**:
+A weekly rule the Owner states: one Client, one Service, given weekdays at given clock times, between two dates. Each date it books is an ordinary Appointment that also carries the Series and the rule date it stands for, even after that Appointment alone moves. Booked all or nothing. Ending a Series cancels its future unpaid Appointments; deleting one erases a Series booked by mistake.
+_Avoid_: Recurrence, recurring appointment, schedule, plan
+
 **Money**:
 All amounts are whole Chilean pesos stored as integers. CLP has no minor unit â€” there are no cents anywhere.
 _Avoid_: Cents, currency field
@@ -37,6 +41,10 @@ The only agent-facing delete: records remain recoverable. Erases mistakes only â
 
 **Restore**:
 Un-delete: flips `deleted_at` back to null via a `restore_*` tool. Restoring an Appointment re-runs the overlap check.
+
+**Refusal**:
+A tool's "no", in one shape for every tool. It says either what the Owner must decide or answer (`say`, Spanish, relayed by the model) or what the model got wrong (`fix`, never shown to the Owner). A refused call saves nothing. A refused write whose input was valid still gets its Audit log row.
+_Avoid_: Error message, exception, failure
 
 **Audit log**:
 Append-only record of every agent *write* (tool, input, entity+id, before-state, ok, error, timestamp). Reads are not logged. Retained for the Owner's lifetime; the sole durable record of what the agent did.
