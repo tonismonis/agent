@@ -13,7 +13,6 @@ import {
   owners,
   payments,
   services,
-  working_hours,
 } from '#/db/schema'
 import {
   createAppointment,
@@ -75,9 +74,6 @@ beforeEach(async () => {
     .where(inArray(appointments.owner_id, ownerIds))
   await adminDb.delete(clients).where(inArray(clients.owner_id, ownerIds))
   await adminDb.delete(services).where(inArray(services.owner_id, ownerIds))
-  await adminDb
-    .delete(working_hours)
-    .where(inArray(working_hours.owner_id, ownerIds))
   await adminDb
     .update(owners)
     .set({ name: 'Alice', profession: 'Consultant', restricted_notes: false })

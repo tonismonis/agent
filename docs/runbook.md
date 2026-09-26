@@ -19,7 +19,7 @@ The test connects as `crm_app`, interleaves two Owners through `withOwnerTxn`, c
 
 ## Reset demo data
 
-`pnpm demo:reset` (from `crm/`) empties every CRM table (clients, services, appointments, payments, working hours, chat messages, runs, audit log) in one transaction and prints how many rows each lost. Owners are kept, so invited accounts can still sign in. It connects with `DATABASE_ADMIN_URL` and refuses to run unless that host is `localhost`, `127.0.0.1` or `::1`. Afterwards, reload any open chat tab: it still holds the old transcript in memory.
+`pnpm demo:reset` (from `crm/`) empties every CRM table (clients, services, appointments, payments, chat messages, runs, audit log) in one transaction and prints how many rows each lost. Owners are kept, so invited accounts can still sign in. It connects with `DATABASE_ADMIN_URL` and refuses to run unless that host is `localhost`, `127.0.0.1` or `::1`. Afterwards, reload any open chat tab: it still holds the old transcript in memory.
 
 ## Render PITR restore
 

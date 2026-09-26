@@ -21,7 +21,6 @@ const DATA_TABLES = [
   'clients',
   'appointments',
   'payments',
-  'working_hours',
 ] as const
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])

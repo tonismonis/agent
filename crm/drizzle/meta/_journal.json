@@ -71,6 +71,13 @@
       "when": 1790207807627,
       "tag": "0009_appointments_no_overlap",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790435241634,
+      "tag": "0010_drop_working_hours",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,6 @@
 import { sql } from 'drizzle-orm'
 import {
   boolean,
-  check,
   bigint,
   foreignKey,
   index,
@@ -14,7 +13,6 @@ import {
   primaryKey,
   serial,
   text,
-  time,
   timestamp,
   unique,
   uuid,
@@ -242,25 +240,6 @@ export const payments = pgTable(
       columns: [table.appointment_id, table.owner_id],
       foreignColumns: [appointments.id, appointments.owner_id],
     }),
-    ownerPolicy(),
-  ],
-).enableRLS()
-
-export const working_hours = pgTable(
-  'working_hours',
-  {
-    owner_id: uuid()
-      .notNull()
-      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
-      .references(() => owners.id),
-    weekday: integer().notNull(),
-    start_time: time().notNull(),
-    end_time: time().notNull(),
-  },
-  (table) => [
-    check('working_hours_weekday_check', sql`${table.weekday} between 0 and 6`),
-    check('working_hours_time_check', sql`${table.start_time} < ${table.end_time}`),
-    // Drizzle has no exclusion-constraint builder; migration adds working_hours_no_overlap.
     ownerPolicy(),
   ],
 ).enableRLS()
