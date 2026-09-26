@@ -20,6 +20,8 @@ const DATA_TABLES = [
   'services',
   'clients',
   'appointments',
+  'appointment_series',
+  'appointment_series_days',
   'payments',
 ] as const
 

@@ -7,6 +7,8 @@ import { chatTools } from './chat-tools'
 import { readRefusal } from './refusal'
 import { refusalOf } from '#/test/refusals'
 import {
+  appointmentSeries,
+  appointmentSeriesDays,
   appointments,
   audit_log,
   clients,
@@ -72,6 +74,12 @@ beforeEach(async () => {
   await adminDb
     .delete(appointments)
     .where(inArray(appointments.owner_id, ownerIds))
+  await adminDb
+    .delete(appointmentSeriesDays)
+    .where(inArray(appointmentSeriesDays.owner_id, ownerIds))
+  await adminDb
+    .delete(appointmentSeries)
+    .where(inArray(appointmentSeries.owner_id, ownerIds))
   await adminDb.delete(clients).where(inArray(clients.owner_id, ownerIds))
   await adminDb.delete(services).where(inArray(services.owner_id, ownerIds))
   await adminDb

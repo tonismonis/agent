@@ -7,7 +7,15 @@ import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { beforeAll, beforeEach, expect, test } from 'vitest'
 
-import { appointments, audit_log, clients, owners, services } from '#/db/schema'
+import {
+  appointmentSeries,
+  appointmentSeriesDays,
+  appointments,
+  audit_log,
+  clients,
+  owners,
+  services,
+} from '#/db/schema'
 import { withRefusalOutput } from './chat-run'
 import { chatTools, createChatTools } from './chat-tools'
 import { readRefusal } from './refusal'
@@ -38,6 +46,12 @@ beforeAll(async () => {
 beforeEach(async () => {
   await adminDb.delete(audit_log).where(eq(audit_log.owner_id, ownerId))
   await adminDb.delete(appointments).where(eq(appointments.owner_id, ownerId))
+  await adminDb
+    .delete(appointmentSeriesDays)
+    .where(eq(appointmentSeriesDays.owner_id, ownerId))
+  await adminDb
+    .delete(appointmentSeries)
+    .where(eq(appointmentSeries.owner_id, ownerId))
   await adminDb.delete(clients).where(eq(clients.owner_id, ownerId))
   await adminDb.delete(services).where(eq(services.owner_id, ownerId))
 })

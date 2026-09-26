@@ -3,6 +3,7 @@ import {
   boolean,
   bigint,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -14,8 +15,10 @@ import {
   primaryKey,
   serial,
   text,
+  time,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core'
 
@@ -176,6 +179,79 @@ export const appointmentStatus = pgEnum('appointment_status', [
   'no_show',
 ])
 
+/**
+ * A weekly rule the Owner stated: the same client, service and clock time on
+ * given weekdays between two dates. Its classes are ordinary appointments
+ * carrying `series_id` and the rule date they fulfil.
+ */
+export const appointmentSeries = pgTable(
+  'appointment_series',
+  {
+    id: serial().primaryKey(),
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    client_id: integer().notNull(),
+    service_id: integer().notNull(),
+    mode: appointmentMode().notNull(),
+    duration_minutes: integer().notNull(),
+    // Per-class price snapshot, as on appointments.
+    price: integer().notNull(),
+    starts_on: date({ mode: 'string' }).notNull(),
+    ends_on: date({ mode: 'string' }).notNull(),
+    created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    deleted_at: timestamp({ withTimezone: true }),
+  },
+  (table) => [
+    unique('appointment_series_id_owner_id_unique').on(table.id, table.owner_id),
+    unique('appointment_series_id_client_id_owner_id_unique').on(
+      table.id,
+      table.client_id,
+      table.owner_id,
+    ),
+    foreignKey({
+      name: 'appointment_series_client_owner_fk',
+      columns: [table.client_id, table.owner_id],
+      foreignColumns: [clients.id, clients.owner_id],
+    }),
+    foreignKey({
+      name: 'appointment_series_service_owner_fk',
+      columns: [table.service_id, table.owner_id],
+      foreignColumns: [services.id, services.owner_id],
+    }),
+    check('appointment_series_ends_on_or_after_start', sql`${table.ends_on} >= ${table.starts_on}`),
+    check('appointment_series_duration_positive', sql`${table.duration_minutes} > 0`),
+    check('appointment_series_price_nonnegative', sql`${table.price} >= 0`),
+    ownerPolicy(),
+  ],
+).enableRLS()
+
+/** The weekdays of a series and the clock time on each; 0 is Sunday, as extract(dow). */
+export const appointmentSeriesDays = pgTable(
+  'appointment_series_days',
+  {
+    series_id: integer().notNull(),
+    owner_id: uuid()
+      .notNull()
+      .default(sql`nullif(current_setting('app.owner_id', true), '')::uuid`)
+      .references(() => owners.id),
+    weekday: integer().notNull(),
+    starts_time: time().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.series_id, table.weekday] }),
+    foreignKey({
+      name: 'appointment_series_days_series_owner_fk',
+      columns: [table.series_id, table.owner_id],
+      foreignColumns: [appointmentSeries.id, appointmentSeries.owner_id],
+    }),
+    check('appointment_series_days_weekday_range', sql`${table.weekday} between 0 and 6`),
+    ownerPolicy(),
+  ],
+).enableRLS()
+
 export const appointments = pgTable(
   'appointments',
   {
@@ -193,6 +269,12 @@ export const appointments = pgTable(
     // Price snapshot at creation; Services.price may change later.
     price: integer().notNull(),
     notes: text(),
+    series_id: integer(),
+    // The rule date this class fulfils; stays put when the class alone moves.
+    series_date: date({ mode: 'string' }),
+    series_weekday: integer().generatedAlwaysAs(
+      sql`extract(dow from "series_date")::int`,
+    ),
     created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
     deleted_at: timestamp({ withTimezone: true }),
@@ -207,6 +289,27 @@ export const appointments = pgTable(
     ),
     check('appointments_ends_after_start', sql`${table.ends_at} > ${table.starts_at}`),
     check('appointments_price_nonnegative', sql`${table.price} >= 0`),
+    check(
+      'appointments_series_pair',
+      sql`(${table.series_id} is null) = (${table.series_date} is null)`,
+    ),
+    uniqueIndex('appointments_series_date_unique')
+      .on(table.series_id, table.series_date)
+      .where(sql`${table.deleted_at} is null`),
+    foreignKey({
+      name: 'appointments_series_client_fk',
+      columns: [table.series_id, table.client_id, table.owner_id],
+      foreignColumns: [
+        appointmentSeries.id,
+        appointmentSeries.client_id,
+        appointmentSeries.owner_id,
+      ],
+    }),
+    foreignKey({
+      name: 'appointments_series_day_fk',
+      columns: [table.series_id, table.series_weekday],
+      foreignColumns: [appointmentSeriesDays.series_id, appointmentSeriesDays.weekday],
+    }),
     foreignKey({
       name: 'appointments_client_owner_fk',
       columns: [table.client_id, table.owner_id],

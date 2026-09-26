@@ -85,6 +85,13 @@
       "when": 1790438314263,
       "tag": "0011_db_invariants",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790439224280,
+      "tag": "0012_appointment_series",
+      "breakpoints": true
     }
   ]
 }
