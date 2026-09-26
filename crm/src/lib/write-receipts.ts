@@ -44,7 +44,7 @@ export type WriteSummary =
   | { kind: 'receipt'; lines: Array<ReceiptLine> }
   | { kind: 'card'; subject: string; count: number; rows: Array<ReceiptLine> }
 
-const writeVerbs = ['create', 'update', 'softdelete', 'soft_delete', 'restore', 'set']
+const writeVerbs = ['create', 'update', 'softdelete', 'soft_delete', 'restore']
 
 type Gender = 'm' | 'f'
 
@@ -53,7 +53,6 @@ const entityByToken: Array<[string, string, Gender]> = [
   ['service', 'Servicio', 'm'],
   ['appointment', 'Cita', 'f'],
   ['payment', 'Pago', 'm'],
-  ['working_hours', 'Horario', 'm'],
   ['owner_profile', 'Perfil', 'm'],
 ]
 
@@ -72,9 +71,6 @@ const fieldLabels = new Map([
   ['status', 'Estado'],
   ['amount', 'Monto'],
   ['paid_at', 'Pagado el'],
-  ['weekday', 'Día'],
-  ['start_time', 'Desde'],
-  ['end_time', 'Hasta'],
   ['profession', 'Profesión'],
 ])
 
@@ -121,7 +117,6 @@ const knownWriteTools = new Set(
     `restore${entity}`,
   ]),
 )
-knownWriteTools.add('set_working_hours')
 knownWriteTools.add('update_owner_profile')
 
 /**
@@ -147,12 +142,11 @@ export function isWriteTool(name: string) {
   return writeVerbs.some((verb) => flat.startsWith(normalize(verb)))
 }
 
-export function toolVerb(name: string): 'created' | 'updated' | 'removed' | 'restored' | 'set' {
+export function toolVerb(name: string): 'created' | 'updated' | 'removed' | 'restored' {
   const flat = normalize(name)
   if (flat.startsWith('create')) return 'created'
   if (flat.startsWith('softdelete')) return 'removed'
   if (flat.startsWith('restore')) return 'restored'
-  if (flat.startsWith('set')) return 'set'
   return 'updated'
 }
 
@@ -178,7 +172,6 @@ const verbStems = {
   updated: 'actualizad',
   removed: 'eliminad',
   restored: 'restaurad',
-  set: 'configurad',
 } satisfies Record<ReturnType<typeof toolVerb>, string>
 
 /** The verb as a participle agreeing with the record it acted on: `cita creada`. */

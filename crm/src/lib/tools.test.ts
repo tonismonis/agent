@@ -33,8 +33,6 @@ import {
   softDeleteClient,
   softDeletePayment,
   softDeleteService,
-  findFreeSlots,
-  setWorkingHours,
   updateAppointment,
   updateClient,
   updateOwnerProfile,
@@ -96,11 +94,14 @@ test('chat registers restore and audit tools', () => {
       'restoreAppointment',
       'restorePayment',
       'listAuditLog',
-      'set_working_hours',
-      'find_free_slots',
       'update_owner_profile',
     ]),
   )
+})
+
+test('no chat tool stores or computes availability (ADR 0006)', () => {
+  const names = chatTools.map((tool) => tool.name)
+  expect(names.filter((name) => /slot|hours|availab|schedule/i.test(name))).toEqual([])
 })
 
 test('code-mode stubs carry every tool result shape', () => {
@@ -1080,100 +1081,6 @@ test('updateAppointment throws clean error for nonexistent appointment', async (
       starts_at: '2026-08-01T15:00:00.000Z',
     }),
   ).rejects.toThrow(/Appointment 999999 not found/)
-})
-
-test('setWorkingHours fully replaces rows and rejects overlaps', async () => {
-  await setWorkingHours.execute({
-    hours: [
-      { weekday: 1, start_time: '09:00', end_time: '12:00' },
-      { weekday: 1, start_time: '14:00', end_time: '18:00' },
-      { weekday: 2, start_time: '10:00', end_time: '16:00' },
-    ],
-  })
-  await setWorkingHours.execute({
-    hours: [{ weekday: 3, start_time: '08:30', end_time: '13:00' }],
-  })
-
-  expect(await db.select().from(working_hours)).toEqual([
-    expect.objectContaining({
-      owner_id: ownerA,
-      weekday: 3,
-      start_time: '08:30:00',
-      end_time: '13:00:00',
-    }),
-  ])
-  await expect(
-    setWorkingHours.execute({
-      hours: [
-        { weekday: 1, start_time: '09:00', end_time: '12:00' },
-        { weekday: 1, start_time: '11:59', end_time: '13:00' },
-      ],
-    }),
-  ).rejects.toThrow(/overlap/i)
-  await expect(
-    setWorkingHours.execute({
-      hours: [{ weekday: 1, start_time: '12:00', end_time: '09:00' }],
-    }),
-  ).rejects.toThrow(/start_time must be before end_time/i)
-  expect(await db.select().from(working_hours)).toHaveLength(1)
-})
-
-test('findFreeSlots spans days, subtracts appointments, and omits days off', async () => {
-  await setWorkingHours.execute({
-    hours: [
-      { weekday: 1, start_time: '09:00', end_time: '12:00' },
-      { weekday: 2, start_time: '09:00', end_time: '12:00' },
-    ],
-  })
-  const client = await createClient.execute({ name: 'Rosa' })
-  const service = await createService.execute({
-    name: 'Lesson',
-    price: 15000,
-    unit: 'hour',
-    duration_minutes: 60,
-  })
-  await createAppointment.execute({
-    client_id: client.id,
-    service_id: service.id,
-    starts_at: '2026-08-03T14:00:00.000Z',
-    mode: 'online',
-  })
-  const cancelled = await createAppointment.execute({
-    client_id: client.id,
-    service_id: service.id,
-    starts_at: '2026-08-04T13:00:00.000Z',
-    mode: 'online',
-  })
-  await updateAppointment.execute({ id: cancelled.id, status: 'cancelled' })
-
-  const slots = await findFreeSlots.execute({
-    from: '2026-08-03',
-    to: '2026-08-05',
-    duration_minutes: 60,
-  })
-
-  expect(slots).toEqual([
-    {
-      starts_at: new Date('2026-08-03T13:00:00.000Z'),
-      ends_at: new Date('2026-08-03T14:00:00.000Z'),
-    },
-    {
-      starts_at: new Date('2026-08-03T15:00:00.000Z'),
-      ends_at: new Date('2026-08-03T16:00:00.000Z'),
-    },
-    {
-      starts_at: new Date('2026-08-04T13:00:00.000Z'),
-      ends_at: new Date('2026-08-04T14:00:00.000Z'),
-    },
-    {
-      starts_at: new Date('2026-08-04T14:00:00.000Z'),
-      ends_at: new Date('2026-08-04T15:00:00.000Z'),
-    },
-    {
-      starts_at: new Date('2026-08-04T15:00:00.000Z'),
-      ends_at: new Date('2026-08-04T16:00:00.000Z'),
-    },
-  ])
 })
 
 test('restricted notes rejects writes and removes notes from all tool reads', async () => {

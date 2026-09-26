@@ -22,7 +22,6 @@ import {
   owners,
   payments,
   services,
-  working_hours,
 } from '#/db/schema'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 
@@ -31,7 +30,6 @@ type AuditEntity =
   | 'service'
   | 'appointment'
   | 'payment'
-  | 'working_hours'
   | 'owner'
 
 /**
@@ -292,13 +290,6 @@ const paymentRecord = z.object({
   deleted_at: deletedAt,
 })
 
-const workingHourRecord = z.object({
-  owner_id: z.string(),
-  weekday: z.number().int().describe('0 = Sunday through 6 = Saturday'),
-  start_time: z.string().describe('Local time of day as HH:MM:SS'),
-  end_time: z.string().describe('Local time of day as HH:MM:SS'),
-})
-
 const auditRecord = z.object({
   id: z.number().int(),
   owner_id: z.string(),
@@ -359,132 +350,6 @@ export const listAuditLog = {
             ok !== undefined ? eq(audit_log.ok, ok) : undefined,
           ),
         ),
-  ),
-}
-
-const workingHourSchema = z.object({
-  weekday: z.number().int().min(0).max(6),
-  start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-  end_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-})
-
-const setWorkingHoursInput = z
-  .object({ hours: z.array(workingHourSchema) })
-  .superRefine(({ hours }, context) => {
-    const sorted = [...hours].sort(
-      (a, b) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time),
-    )
-    for (let index = 0; index < sorted.length; index++) {
-      const current = sorted[index]
-      if (current.start_time >= current.end_time)
-        context.addIssue({
-          code: 'custom',
-          message: `start_time must be before end_time for weekday ${current.weekday}`,
-        })
-      const previous = sorted[index - 1]
-      if (
-        previous?.weekday === current.weekday &&
-        current.start_time < previous.end_time
-      )
-        context.addIssue({
-          code: 'custom',
-          message: `Working hours overlap on weekday ${current.weekday}`,
-        })
-    }
-  })
-
-export const setWorkingHours = {
-  name: 'set_working_hours',
-  description:
-    'Replace the complete weekly working-hours template. Omitted weekdays become days off.',
-  inputSchema: setWorkingHoursInput,
-  outputSchema: z.array(workingHourRecord),
-  execute: auditedExecute(
-    'set_working_hours',
-    'working_hours',
-    setWorkingHoursInput,
-    async ({ hours }) => {
-      await db.delete(working_hours)
-      if (hours.length === 0) return []
-      return db.insert(working_hours).values(hours).returning()
-    },
-    async () => db.select().from(working_hours),
-  ),
-}
-
-const localDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
-const findFreeSlotsInput = z
-  .object({
-    from: localDate,
-    to: localDate,
-    duration_minutes: z.number().int().positive(),
-  })
-  .refine(({ from, to }) => from <= to, {
-    message: 'from must be on or before to',
-  })
-
-export const findFreeSlots = {
-  name: 'find_free_slots',
-  description:
-    'Find exact-duration free slots in America/Santiago between inclusive local dates, excluding non-cancelled appointments.',
-  inputSchema: findFreeSlotsInput,
-  outputSchema: z.array(
-    z.object({ starts_at: timestamp, ends_at: timestamp }),
-  ),
-  execute: parsedExecute(
-    findFreeSlotsInput,
-    async ({ from, to, duration_minutes }) => {
-      const result = await db.execute<{
-        starts_at: Date
-        ends_at: Date
-      }>(sql`
-        with days as (
-          select generate_series(${from}::date, ${to}::date, interval '1 day')::date as day
-        ), windows as (
-          select tstzrange(
-            (days.day + ${working_hours.start_time}) at time zone 'America/Santiago',
-            (days.day + ${working_hours.end_time}) at time zone 'America/Santiago',
-            '[)'
-          ) as slot
-          from days
-          join ${working_hours}
-            on ${working_hours.weekday} = extract(dow from days.day)::integer
-        ), free_ranges as (
-          select free.slot
-          from windows
-          left join lateral (
-            select coalesce(
-              range_agg(tstzrange(
-                greatest(${appointments.starts_at}, lower(windows.slot)),
-                least(${appointments.ends_at}, upper(windows.slot)),
-                '[)'
-              )),
-              '{}'::tstzmultirange
-            ) as occupied
-            from ${appointments}
-            where ${appointments.status} <> 'cancelled'
-              and ${appointments.deleted_at} is null
-              and tstzrange(${appointments.starts_at}, ${appointments.ends_at}, '[)') && windows.slot
-          ) busy on true
-          cross join lateral unnest(
-            tstzmultirange(windows.slot) - busy.occupied
-          ) as free(slot)
-        )
-        select candidate as starts_at,
-          candidate + make_interval(mins => ${duration_minutes}) as ends_at
-        from free_ranges
-        cross join lateral generate_series(
-          lower(slot),
-          upper(slot) - make_interval(mins => ${duration_minutes}),
-          make_interval(mins => ${duration_minutes})
-        ) as candidate
-        order by starts_at
-      `)
-      return result.rows.map(({ starts_at, ends_at }) => ({
-        starts_at: new Date(starts_at),
-        ends_at: new Date(ends_at),
-      }))
-    },
   ),
 }
 
@@ -1025,7 +890,7 @@ const createAppointmentInput = z.object({
 export const createAppointment = {
   name: 'createAppointment',
   description:
-    'Book an appointment. On an overlap error, relay the conflict to the owner and ask them to rebook another time.',
+    'Book an appointment at a time the Owner stated. On an overlap error, tell the Owner what it collides with and ask for another time; never suggest one.',
   inputSchema: createAppointmentInput,
   outputSchema: appointmentRecord,
   execute: auditedExecute(

@@ -17,7 +17,6 @@ describe('isWriteTool', () => {
   it('separates writes from reads', () => {
     expect(isWriteTool('updateClient')).toBe(true)
     expect(isWriteTool('softDeleteAppointment')).toBe(true)
-    expect(isWriteTool('set_working_hours')).toBe(true)
     expect(isWriteTool('findClients')).toBe(false)
     expect(isWriteTool('listAuditLog')).toBe(false)
   })

@@ -7,7 +7,6 @@ import {
   createService,
   findAppointments,
   findClients,
-  findFreeSlots,
   findPayments,
   findServices,
   listAuditLog,
@@ -19,7 +18,6 @@ import {
   softDeleteClient,
   softDeletePayment,
   softDeleteService,
-  setWorkingHours,
   updateAppointment,
   updateClient,
   updateOwnerProfile,
@@ -97,8 +95,6 @@ export function createChatTools(run: ToolRunner) {
     bindTool(softDeletePayment, run),
     bindTool(restorePayment, run),
     bindTool(listAuditLog, run),
-    bindTool(setWorkingHours, run),
-    bindTool(findFreeSlots, run),
     bindTool(updateOwnerProfile, run),
   ]
 }
