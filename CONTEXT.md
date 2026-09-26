@@ -21,7 +21,7 @@ How a Service is charged: `hour` (price per hour) or `flat` (price per occurrenc
 _Avoid_: Billing type, pricing model
 
 **Appointment**:
-A scheduled block of the Owner's time delivering one Service to exactly one adult Client, online or in person. Never a group; the Client attending is the Client paying.
+A scheduled block of the Owner's time delivering one Service to exactly one adult Client, online or in person. Never a group; the Client attending is the Client paying. Only `scheduled` Appointments take up the Owner's time, for the overlap check and for answering whether the Owner is free. The CRM has no availability concept. Every Appointment time comes from the Owner.
 _Avoid_: Booking, session, lesson, class
 
 **Money**:
@@ -37,10 +37,6 @@ The only agent-facing delete: records remain recoverable. Erases mistakes only â
 
 **Restore**:
 Un-delete: flips `deleted_at` back to null via a `restore_*` tool. Restoring an Appointment re-runs the overlap check.
-
-**Working hours**:
-The Owner's weekly availability template: per-weekday time ranges (no rows for a day = day off). Bounds free-slot suggestions via `find_free_slots`; one-off exceptions and vacations are post-v1.
-_Avoid_: Schedule, availability, calendar
 
 **Audit log**:
 Append-only record of every agent *write* (tool, input, entity+id, before-state, ok, error, timestamp). Reads are not logged. Retained for the Owner's lifetime; the sole durable record of what the agent did.
