@@ -392,25 +392,6 @@ function readTool<TSchema extends z.ZodType, TOutput extends z.ZodType, TResult>
   }
 }
 
-function auditedExecute<TSchema extends z.ZodType, TResult, TBefore = null>(
-  toolName: string,
-  entity: AuditEntity,
-  schema: TSchema,
-  operation: (input: z.output<TSchema>) => Promise<TResult>,
-  getBefore?: (input: z.output<TSchema>) => Promise<TBefore>,
-) {
-  return writeTool({
-    name: toolName,
-    entity,
-    description: '',
-    guide: { does: '' },
-    input: schema,
-    output: schema,
-    before: getBefore,
-    run: operation,
-  }).execute
-}
-
 /**
  * Run one tool call in its own Owner transaction. A failure the audit log has
  * recorded commits that record before it is rethrown; any other failure rolls
@@ -432,20 +413,6 @@ export async function runOwnerTool<TResult>(
   })
   if (!outcome.ok) throw outcome.error
   return outcome.value
-}
-
-function parsedExecute<TSchema extends z.ZodType, TResult>(
-  schema: TSchema,
-  operation: (input: z.output<TSchema>) => Promise<TResult>,
-) {
-  return readTool({
-    name: '',
-    description: '',
-    guide: { does: '' },
-    input: schema,
-    output: schema,
-    run: operation,
-  }).execute
 }
 
 /**
@@ -545,7 +512,9 @@ const auditRecord = z.object({
 
 const listAuditLogInput = z
   .object({
-    entity: z.enum(['client', 'service', 'appointment', 'payment']).optional(),
+    entity: z
+      .enum(['client', 'service', 'appointment', 'payment', 'owner'])
+      .optional(),
     entity_id: z.number().optional(),
     since: rangeInput.optional(),
     until: rangeInput.optional(),
@@ -563,62 +532,62 @@ const listAuditLogInput = z
     { message: 'Provide a filter or all: true' },
   )
 
-export const listAuditLog = {
+export const listAuditLog = readTool({
   name: 'listAuditLog',
   description:
     'List audit records by entity, entity ID, timestamp range, or outcome. Pass all: true for every record.',
-  inputSchema: listAuditLogInput,
-  outputSchema: z.array(auditRecord),
-  execute: parsedExecute(
-    listAuditLogInput,
-    async ({ entity, entity_id, since, until, ok }) => {
-      const { start, end } = toRange(since, until)
-      return db
-        .select()
-        .from(audit_log)
-        .where(
-          and(
-            entity ? eq(audit_log.entity, entity) : undefined,
-            entity_id !== undefined
-              ? eq(audit_log.entity_id, entity_id)
-              : undefined,
-            start ? gte(audit_log.ts, start) : undefined,
-            end ? lt(audit_log.ts, end) : undefined,
-            ok !== undefined ? eq(audit_log.ok, ok) : undefined,
-          ),
-        )
-    },
-  ),
-}
+  guide: {
+    does: 'Muestra el historial de lo que se guardó, para revisar o deshacer un cambio.',
+  },
+  input: listAuditLogInput,
+  output: z.array(auditRecord),
+  run: async ({ entity, entity_id, since, until, ok }) => {
+    const { start, end } = toRange(since, until)
+    return db
+      .select()
+      .from(audit_log)
+      .where(
+        and(
+          entity ? eq(audit_log.entity, entity) : undefined,
+          entity_id !== undefined
+            ? eq(audit_log.entity_id, entity_id)
+            : undefined,
+          start ? gte(audit_log.ts, start) : undefined,
+          end ? lt(audit_log.ts, end) : undefined,
+          ok !== undefined ? eq(audit_log.ok, ok) : undefined,
+        ),
+      )
+  },
+})
 
 const updateOwnerProfileInput = z.object({ name: z.string().min(1) }).strict()
 
-export const updateOwnerProfile = {
+export const updateOwnerProfile = writeTool({
   name: 'update_owner_profile',
+  entity: 'owner',
   description: "Update the Owner's name. Other profile fields are operator-only.",
-  inputSchema: updateOwnerProfileInput,
-  outputSchema: z.object({ name: z.string(), updated_at: timestamp }).optional(),
-  execute: auditedExecute(
-    'update_owner_profile',
-    'owner',
-    updateOwnerProfileInput,
-    async ({ name }) => {
-      const [owner] = await db
-        .update(owners)
-        .set({ name, updated_at: sql`now()` })
-        .where(eq(owners.id, sql`current_setting('app.owner_id')::uuid`))
-        .returning({ name: owners.name, updated_at: owners.updated_at })
-      return owner
-    },
-    async () => {
-      const [owner] = await db
-        .select({ name: owners.name })
-        .from(owners)
-        .where(eq(owners.id, sql`current_setting('app.owner_id')::uuid`))
-      return owner
-    },
-  ),
-}
+  guide: {
+    does: 'Cambia tu nombre.',
+    asks: { name: '¿Qué nombre quieres que use?' },
+  },
+  input: updateOwnerProfileInput,
+  output: z.object({ name: z.string(), updated_at: timestamp }),
+  before: async () => {
+    const [owner] = await db
+      .select({ name: owners.name })
+      .from(owners)
+      .where(eq(owners.id, sql`current_setting('app.owner_id')::uuid`))
+    return owner
+  },
+  run: async ({ name }) => {
+    const [owner] = await db
+      .update(owners)
+      .set({ name, updated_at: sql`now()` })
+      .where(eq(owners.id, sql`current_setting('app.owner_id')::uuid`))
+      .returning({ name: owners.name, updated_at: owners.updated_at })
+    return owner
+  },
+})
 
 const createClientInput = z.object({
   name: z.string(),
@@ -650,45 +619,47 @@ const createServiceInput = z.object({
   duration_minutes: z.number().int().positive().optional(),
 })
 
-export const createService = {
+export const createService = writeTool({
   name: 'createService',
+  entity: 'service',
   description: 'Create a service',
-  inputSchema: createServiceInput,
-  outputSchema: serviceRecord,
-  execute: auditedExecute(
-    'createService',
-    'service',
-    createServiceInput,
-    async (values) => {
-      const [service] = await db.insert(services).values(values).returning()
-      return service
+  guide: {
+    does: 'Agrega un servicio a tu catálogo, con precio por hora o precio fijo y, si quieres, cuánto dura.',
+    asks: {
+      name: '¿Cómo se llama el servicio?',
+      price: '¿Cuánto cobras?',
+      unit: '¿Cobras por hora o un precio fijo?',
     },
-  ),
-}
+  },
+  input: createServiceInput,
+  output: serviceRecord,
+  run: async (values) => {
+    const [service] = await db.insert(services).values(values).returning()
+    return service
+  },
+})
 
 const findServicesInput = z.object({
   query: z.string().optional(),
 })
 
-export const findServices = {
+export const findServices = readTool({
   name: 'findServices',
   description: 'Find active services by name',
-  inputSchema: findServicesInput,
-  outputSchema: z.array(serviceRecord),
-  execute: parsedExecute(
-    findServicesInput,
-    async ({ query }) =>
-      db
-        .select()
-        .from(services)
-        .where(
-          and(
-            isNull(services.deleted_at),
-            query ? ilike(services.name, `%${query}%`) : undefined,
-          ),
+  guide: { does: 'Busca servicios de tu catálogo por nombre.' },
+  input: findServicesInput,
+  output: z.array(serviceRecord),
+  run: async ({ query }) =>
+    db
+      .select()
+      .from(services)
+      .where(
+        and(
+          isNull(services.deleted_at),
+          query ? ilike(services.name, `%${query}%`) : undefined,
         ),
-  ),
-}
+      ),
+})
 
 const updateServiceInput = z.object({
   id: z.number(),
@@ -698,92 +669,68 @@ const updateServiceInput = z.object({
   duration_minutes: z.number().int().positive().optional(),
 })
 
-export const updateService = {
+export const updateService = writeTool({
   name: 'updateService',
+  entity: 'service',
   description: 'Update a service',
-  inputSchema: updateServiceInput,
-  outputSchema: serviceRecord.optional(),
-  execute: auditedExecute(
-    'updateService',
-    'service',
-    updateServiceInput,
-    async ({ id, ...fields }) => {
-      const [service] = await db
-        .update(services)
-        .set({ ...fields, updated_at: sql`now()` })
-        .where(eq(services.id, id))
-        .returning()
-      return service
-    },
-    async ({ id }) => {
-      const [service] = await db
-        .select()
-        .from(services)
-        .where(eq(services.id, id))
-      return service
-    },
-  ),
-}
+  guide: {
+    does: 'Cambia el nombre, precio, unidad o duración de un servicio.',
+    wont: 'No cambia el precio de las citas ya agendadas.',
+  },
+  input: updateServiceInput,
+  output: serviceRecord,
+  before: findService,
+  run: async ({ id, ...fields }) => {
+    const [service] = await db
+      .update(services)
+      .set({ ...fields, updated_at: sql`now()` })
+      .where(eq(services.id, id))
+      .returning()
+    return service
+  },
+})
 
 const softDeleteServiceInput = z.object({
   id: z.number(),
 })
 
-export const softDeleteService = {
+export const softDeleteService = writeTool({
   name: 'softDeleteService',
+  entity: 'service',
   description: 'Soft delete a service',
-  inputSchema: softDeleteServiceInput,
-  outputSchema: serviceRecord.optional(),
-  execute: auditedExecute(
-    'softDeleteService',
-    'service',
-    softDeleteServiceInput,
-    async ({ id }) => {
-      const [service] = await db
-        .update(services)
-        .set({ deleted_at: sql`now()` })
-        .where(eq(services.id, id))
-        .returning()
-      return service
-    },
-    async ({ id }) => {
-      const [service] = await db
-        .select()
-        .from(services)
-        .where(eq(services.id, id))
-      return service
-    },
-  ),
-}
+  guide: { does: 'Saca un servicio del catálogo. Se puede recuperar.' },
+  input: softDeleteServiceInput,
+  output: serviceRecord,
+  before: findService,
+  run: async ({ id }) => {
+    const [service] = await db
+      .update(services)
+      .set({ deleted_at: sql`now()` })
+      .where(eq(services.id, id))
+      .returning()
+    return service
+  },
+})
 
 const restoreServiceInput = z.object({ id: z.number() })
 
-export const restoreService = {
+export const restoreService = writeTool({
   name: 'restoreService',
+  entity: 'service',
   description: 'Restore a soft-deleted service',
-  inputSchema: restoreServiceInput,
-  outputSchema: serviceRecord.optional(),
-  execute: auditedExecute(
-    'restoreService',
-    'service',
-    restoreServiceInput,
-    async ({ id }) => {
-      const [service] = await db
-        .update(services)
-        .set({ deleted_at: null })
-        .where(eq(services.id, id))
-        .returning()
-      return service
-    },
-    async ({ id }) => {
-      const [service] = await db
-        .select()
-        .from(services)
-        .where(eq(services.id, id))
-      return service
-    },
-  ),
-}
+  guide: { does: 'Recupera un servicio borrado.' },
+  input: restoreServiceInput,
+  output: serviceRecord,
+  before: findService,
+  run: async ({ id }) => {
+    const [service] = await db
+      .update(services)
+      .set({ deleted_at: null })
+      .where(eq(services.id, id))
+      .returning()
+    return service
+  },
+})
 
 const updateClientInput = z.object({
   id: z.number(),
@@ -879,6 +826,16 @@ export const restoreClient = writeTool({
     return client
   },
 })
+
+async function findPayment({ id }: { id: number }) {
+  const [payment] = await db.select().from(payments).where(eq(payments.id, id))
+  return payment
+}
+
+async function findService({ id }: { id: number }) {
+  const [service] = await db.select().from(services).where(eq(services.id, id))
+  return service
+}
 
 async function findClient({ id }: { id: number }) {
   const [client] = await db.select().from(clients).where(eq(clients.id, id))
@@ -1281,24 +1238,24 @@ const createPaymentInput = z.object({
   notes: z.string().optional(),
 })
 
-export const createPayment = {
+export const createPayment = writeTool({
   name: 'createPayment',
+  entity: 'payment',
   description: 'Record a payment received from a client',
-  inputSchema: createPaymentInput,
-  outputSchema: paymentRecord,
-  execute: auditedExecute(
-    'createPayment',
-    'payment',
-    createPaymentInput,
-    async ({ paid_at, ...rest }) => {
-      const [payment] = await db
-        .insert(payments)
-        .values({ ...rest, paid_at: paid_at ? startOf(paid_at) : new Date() })
-        .returning()
-      return payment
-    },
-  ),
-}
+  guide: {
+    does: 'Anota un pago que recibiste de un cliente, suelto o por una cita.',
+    asks: { client_id: '¿Quién te pagó?', amount: '¿Cuánto te pagó?' },
+  },
+  input: createPaymentInput,
+  output: paymentRecord,
+  run: async ({ paid_at, ...rest }) => {
+    const [payment] = await db
+      .insert(payments)
+      .values({ ...rest, paid_at: paid_at ? startOf(paid_at) : new Date() })
+      .returning()
+    return payment
+  },
+})
 
 const findPaymentsInput = z.object({
   client_id: z.number().optional(),
@@ -1306,29 +1263,27 @@ const findPaymentsInput = z.object({
   to: rangeInput.optional(),
 })
 
-export const findPayments = {
+export const findPayments = readTool({
   name: 'findPayments',
   description: 'Find payments by client and paid_at range',
-  inputSchema: findPaymentsInput,
-  outputSchema: z.array(paymentRecord),
-  execute: parsedExecute(
-    findPaymentsInput,
-    async ({ client_id, from, to }) => {
-      const { start, end } = toRange(from, to)
-      return db
-        .select()
-        .from(payments)
-        .where(
-          and(
-            isNull(payments.deleted_at),
-            client_id ? eq(payments.client_id, client_id) : undefined,
-            start ? gte(payments.paid_at, start) : undefined,
-            end ? lt(payments.paid_at, end) : undefined,
-          ),
-        )
-    },
-  ),
-}
+  guide: { does: 'Muestra los pagos de un cliente o de un período.' },
+  input: findPaymentsInput,
+  output: z.array(paymentRecord),
+  run: async ({ client_id, from, to }) => {
+    const { start, end } = toRange(from, to)
+    return db
+      .select()
+      .from(payments)
+      .where(
+        and(
+          isNull(payments.deleted_at),
+          client_id ? eq(payments.client_id, client_id) : undefined,
+          start ? gte(payments.paid_at, start) : undefined,
+          end ? lt(payments.paid_at, end) : undefined,
+        ),
+      )
+  },
+})
 
 const updatePaymentInput = z.object({
   id: z.number(),
@@ -1338,94 +1293,67 @@ const updatePaymentInput = z.object({
   notes: z.string().optional(),
 })
 
-export const updatePayment = {
+export const updatePayment = writeTool({
   name: 'updatePayment',
+  entity: 'payment',
   description: 'Update a payment',
-  inputSchema: updatePaymentInput,
-  outputSchema: paymentRecord.optional(),
-  execute: auditedExecute(
-    'updatePayment',
-    'payment',
-    updatePaymentInput,
-    async ({ id, paid_at, ...fields }) => {
-      const set: PgUpdateSetSource<typeof payments> = {
-        ...fields,
-        updated_at: sql`now()`,
-      }
-      if (paid_at) set.paid_at = startOf(paid_at)
-      const [payment] = await db
-        .update(payments)
-        .set(set)
-        .where(eq(payments.id, id))
-        .returning()
-      return payment
-    },
-    async ({ id }) => {
-      const [payment] = await db
-        .select()
-        .from(payments)
-        .where(eq(payments.id, id))
-      return payment
-    },
-  ),
-}
+  guide: { does: 'Corrige el monto, la fecha, la cita o las notas de un pago.' },
+  input: updatePaymentInput,
+  output: paymentRecord,
+  before: findPayment,
+  run: async ({ id, paid_at, ...fields }) => {
+    const set: PgUpdateSetSource<typeof payments> = {
+      ...fields,
+      updated_at: sql`now()`,
+    }
+    if (paid_at) set.paid_at = startOf(paid_at)
+    const [payment] = await db
+      .update(payments)
+      .set(set)
+      .where(eq(payments.id, id))
+      .returning()
+    return payment
+  },
+})
 
 const softDeletePaymentInput = z.object({
   id: z.number(),
 })
 
-export const softDeletePayment = {
+export const softDeletePayment = writeTool({
   name: 'softDeletePayment',
+  entity: 'payment',
   description: 'Soft delete a payment',
-  inputSchema: softDeletePaymentInput,
-  outputSchema: paymentRecord.optional(),
-  execute: auditedExecute(
-    'softDeletePayment',
-    'payment',
-    softDeletePaymentInput,
-    async ({ id }) => {
-      const [payment] = await db
-        .update(payments)
-        .set({ deleted_at: sql`now()` })
-        .where(eq(payments.id, id))
-        .returning()
-      return payment
-    },
-    async ({ id }) => {
-      const [payment] = await db
-        .select()
-        .from(payments)
-        .where(eq(payments.id, id))
-      return payment
-    },
-  ),
-}
+  guide: { does: 'Borra un pago anotado por error. Se puede recuperar.' },
+  input: softDeletePaymentInput,
+  output: paymentRecord,
+  before: findPayment,
+  run: async ({ id }) => {
+    const [payment] = await db
+      .update(payments)
+      .set({ deleted_at: sql`now()` })
+      .where(eq(payments.id, id))
+      .returning()
+    return payment
+  },
+})
 
 const restorePaymentInput = z.object({ id: z.number() })
 
-export const restorePayment = {
+export const restorePayment = writeTool({
   name: 'restorePayment',
+  entity: 'payment',
   description: 'Restore a soft-deleted payment',
-  inputSchema: restorePaymentInput,
-  outputSchema: paymentRecord.optional(),
-  execute: auditedExecute(
-    'restorePayment',
-    'payment',
-    restorePaymentInput,
-    async ({ id }) => {
-      const [payment] = await db
-        .update(payments)
-        .set({ deleted_at: null })
-        .where(eq(payments.id, id))
-        .returning()
-      return payment
-    },
-    async ({ id }) => {
-      const [payment] = await db
-        .select()
-        .from(payments)
-        .where(eq(payments.id, id))
-      return payment
-    },
-  ),
-}
+  guide: { does: 'Recupera un pago borrado.' },
+  input: restorePaymentInput,
+  output: paymentRecord,
+  before: findPayment,
+  run: async ({ id }) => {
+    const [payment] = await db
+      .update(payments)
+      .set({ deleted_at: null })
+      .where(eq(payments.id, id))
+      .returning()
+    return payment
+  },
+})

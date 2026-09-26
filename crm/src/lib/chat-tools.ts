@@ -25,24 +25,13 @@ import {
   updateOwnerProfile,
   updatePayment,
   updateService,
+  type CrmTool,
 } from '#/lib/tools'
 import { isWriteTool } from '#/lib/write-receipts'
 
 import type { z } from 'zod'
 
 type ToolRunner = <T>(operation: () => Promise<T>) => Promise<T>
-
-type CrmTool<
-  TSchema extends z.ZodType,
-  TOutput extends z.ZodType,
-  TResult,
-> = {
-  name: string
-  description: string
-  inputSchema: TSchema
-  outputSchema: TOutput
-  execute: (input: z.input<TSchema>) => Promise<TResult>
-}
 
 /**
  * A tool result crosses into the model as JSON, so it is made JSON here —

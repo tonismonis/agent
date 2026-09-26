@@ -1296,3 +1296,66 @@ test('updateAppointment reviving to scheduled re-runs overlap check', async () =
     updateAppointment.execute({ id: rosaAppt.id, status: 'scheduled' }),
   ).rejects.toThrow(/Pedro/)
 })
+
+const crmTools = [
+  createClient,
+  findClients,
+  updateClient,
+  softDeleteClient,
+  restoreClient,
+  createService,
+  findServices,
+  updateService,
+  softDeleteService,
+  restoreService,
+  createAppointment,
+  findAppointments,
+  updateAppointment,
+  softDeleteAppointment,
+  restoreAppointment,
+  createPayment,
+  findPayments,
+  updatePayment,
+  softDeletePayment,
+  restorePayment,
+  listAuditLog,
+  updateOwnerProfile,
+]
+
+test('every chat tool explains itself to the Owner in Spanish', () => {
+  expect(crmTools.map((tool) => tool.name).sort()).toEqual(
+    chatTools.map((tool) => tool.name).sort(),
+  )
+  for (const tool of crmTools) {
+    const sentences = [
+      tool.guide.does,
+      tool.guide.wont ?? '',
+      ...Object.values(tool.guide.asks ?? {}),
+    ]
+    expect(tool.guide.does, tool.name).toMatch(/^[A-ZÁÉÍÓÚÑ]/)
+    expect(sentences.join(' '), tool.name).not.toMatch(/!|¡|_id\b|\bid\b/)
+  }
+})
+
+test('a write naming a missing id refuses as not found, for every entity', async () => {
+  expect(await refusalOf(softDeleteService.execute({ id: 999_999 }))).toEqual(
+    expect.objectContaining({ kind: 'not_found', entity: 'service', id: 999_999 }),
+  )
+  expect(await refusalOf(restorePayment.execute({ id: 999_999 }))).toEqual(
+    expect.objectContaining({ kind: 'not_found', entity: 'payment', id: 999_999 }),
+  )
+  expect(
+    await refusalOf(updatePayment.execute({ id: 999_999, amount: 5000 })),
+  ).toEqual(expect.objectContaining({ kind: 'not_found', entity: 'payment' }))
+})
+
+test("missing service fields become the Owner's questions, in field order", async () => {
+  // @ts-expect-error exercising runtime validation
+  const refusal = await refusalOf(createService.execute({ name: 'Piano' }))
+
+  expect(refusal).toEqual({
+    kind: 'ask',
+    say: '¿Cuánto cobras? ¿Cobras por hora o un precio fijo?',
+    needs: ['price', 'unit'],
+  })
+})
