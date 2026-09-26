@@ -28,6 +28,7 @@ import {
   OPENROUTER_PROVIDER_OPTIONS,
 } from '#/lib/inference-config'
 import { buildAppPrompt } from '#/lib/system-prompt'
+import { readRefusal } from '#/lib/refusal'
 import { runOwnerTool } from '#/lib/tools'
 
 import type { ChatMiddleware, StreamChunk, TokenUsage } from '@tanstack/ai'
@@ -175,6 +176,28 @@ export type Turn = {
 /** Produces a turn's chunks. The route runs the real model; tests stand in. */
 export type TurnDriver = (turn: Turn) => AsyncIterable<StreamChunk>
 
+type CodeModeTool = ReturnType<typeof createCodeMode>['tool']
+
+/**
+ * An execution that ended on an uncaught refusal reports `{name: 'Refusal',
+ * message}` and no stack: the stack only repeats the message and the sandbox
+ * frames, and the model reads every character. Other failures, the model's own
+ * TypeError included, pass through untouched.
+ */
+export function withRefusalOutput(tool: CodeModeTool): CodeModeTool {
+  const execute = tool.execute
+  if (!execute) return tool
+  return {
+    ...tool,
+    execute: async (input, context) => {
+      const output = await execute(input, context)
+      const message = output.error?.message
+      if (output.success || !message || !readRefusal(message)) return output
+      return { ...output, error: { name: 'Refusal', message } }
+    },
+  }
+}
+
 /** The production driver: the Owner's CRM tools in code mode, on the model. */
 export const modelTurn: TurnDriver = ({
   owner,
@@ -186,7 +209,7 @@ export const modelTurn: TurnDriver = ({
   const ownerTools = createChatTools((operation) =>
     runOwnerTool(owner.id, operation),
   )
-  const { tools, systemPrompt } = createCodeMode({
+  const { tool, systemPrompt } = createCodeMode({
     driver: isolateDriver,
     tools: ownerTools,
   })
@@ -204,7 +227,7 @@ export const modelTurn: TurnDriver = ({
       }),
       systemPrompt,
     ],
-    tools: [...tools],
+    tools: [withRefusalOutput(tool)],
     agentLoopStrategy: maxIterations(5),
     messages: params.messages,
     threadId: getDailyThreadId(now),

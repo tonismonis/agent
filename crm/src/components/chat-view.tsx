@@ -176,13 +176,16 @@ function totalMs(calls: Array<WorkCall>) {
   return calls.reduce((sum, call) => sum + (call.durationMs ?? 0), 0)
 }
 
-/** `3 llamadas · 114 ms · 1 error` */
+/** `3 llamadas · 114 ms · 1 rechazada · 1 error` */
 function describeWork(calls: Array<WorkCall>) {
-  const errors = calls.filter((call) => call.error !== undefined).length
+  const failed = calls.filter((call) => call.error !== undefined)
+  const refused = failed.filter((call) => call.refused).length
+  const errors = failed.length - refused
   const ms = totalMs(calls)
   return [
     calls.length === 1 ? '1 llamada' : `${calls.length} llamadas`,
     ms > 0 ? `${ms} ms` : null,
+    refused === 0 ? null : refused === 1 ? '1 rechazada' : `${refused} rechazadas`,
     errors === 0 ? null : errors === 1 ? '1 error' : `${errors} errores`,
   ]
     .filter(Boolean)

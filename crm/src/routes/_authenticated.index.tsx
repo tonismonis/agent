@@ -64,6 +64,7 @@ function Home() {
           name: 'execute_typescript',
           durationMs: event.durationMs,
           error: event.message,
+          ...(event.refused && { refused: true as const }),
         })
       } else {
         // Pair the result with the most recent unfinished call of that name.
@@ -79,7 +80,10 @@ function Home() {
           durationMs: event.durationMs,
           ...(event.kind === 'result'
             ? { result: event.result }
-            : { error: event.message }),
+            : {
+                error: event.message,
+                ...(event.refused && { refused: true as const }),
+              }),
         }
       }
 

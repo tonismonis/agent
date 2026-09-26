@@ -7,6 +7,43 @@ const CLOCK = String.raw`T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?`
 const ZONE = String.raw`(Z|[+-]\d{2}:\d{2})`
 const pattern = new RegExp(`^${DATE}(?:${CLOCK}${ZONE}?)?$`)
 
+function isRealDate(value: string) {
+  const [year, month, date] = value.slice(0, 10).split('-').map(Number)
+  const check = new Date(Date.UTC(year!, month! - 1, date))
+  return (
+    check.getUTCFullYear() === year &&
+    check.getUTCMonth() === month! - 1 &&
+    check.getUTCDate() === date
+  )
+}
+
+/** A Santiago calendar date, `2026-11-17`. Never an instant. */
+export const localDate = z
+  .string()
+  .regex(new RegExp(`^${DATE}$`))
+  .refine(isRealDate, 'Not a real date')
+  .brand<'LocalDate'>()
+export type LocalDate = z.output<typeof localDate>
+
+/** A Santiago wall-clock time, 24h: `17:00`. */
+export const clock = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+  .brand<'Clock'>()
+export type Clock = z.output<typeof clock>
+
+/** Indexed by Postgres' `extract(dow …)`: 0 is Sunday. */
+export const weekdays = [
+  'sunday',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+] as const
+export type Weekday = (typeof weekdays)[number]
+
 /**
  * A point in time as the model writes it. With an offset or Z it is that
  * instant. Without one it is the Owner's clock time in America/Santiago.
@@ -16,6 +53,7 @@ const pattern = new RegExp(`^${DATE}(?:${CLOCK}${ZONE}?)?$`)
 export const timeInput = z
   .string()
   .regex(new RegExp(`^${DATE}${CLOCK}${ZONE}?$`))
+  .refine(isRealDate, 'Not a real date')
   .describe(
     "ISO 8601. Without an offset it is the Owner's clock time in America/Santiago, e.g. 2026-10-01T17:00",
   )
@@ -24,6 +62,7 @@ export const timeInput = z
 export const rangeInput = z
   .string()
   .regex(pattern)
+  .refine(isRealDate, 'Not a real date')
   .describe(
     'A date (2026-10-01) means that whole day in America/Santiago; otherwise ISO 8601, read as Santiago clock time when it has no offset',
   )
@@ -32,6 +71,7 @@ export const rangeInput = z
 export const dateOrTimeInput = z
   .string()
   .regex(pattern)
+  .refine(isRealDate, 'Not a real date')
   .describe(
     'A date (2026-10-01) means the start of that day in America/Santiago; otherwise ISO 8601, read as Santiago clock time when it has no offset',
   )
@@ -138,12 +178,77 @@ function candidates(wall: number) {
 export function toInstant(value: z.output<typeof timeInput>): Date {
   const { wall, zone } = parse(value)
   if (zone) return new Date(wall - zoneOffset(zone))
-  const instant = candidates(wall).find((each) => santiagoWall(each) === wall)
-  if (instant === undefined)
+  const instant = wallInstant(wall)
+  if (instant === null)
     throw new NonexistentClockTime(
-      `${value} does not exist in America/Santiago: the clocks skip that hour for daylight saving. Ask the Owner for another time.`,
+      `${value} does not exist in America/Santiago: the clocks skip that hour for daylight saving`,
     )
-  return new Date(instant)
+  return instant
+}
+
+/** The earlier instant whose Santiago wall clock reads `wall`; null in the spring gap. */
+function wallInstant(wall: number) {
+  const instant = candidates(wall).find((each) => santiagoWall(each) === wall)
+  return instant === undefined ? null : new Date(instant)
+}
+
+function dateWall(date: LocalDate) {
+  const [year, month, day] = date.split('-').map(Number)
+  return Date.UTC(year!, month! - 1, day)
+}
+
+function clockMinutes(time: Clock) {
+  const [hours, minutes] = time.split(':').map(Number)
+  return hours! * 60 + minutes!
+}
+
+/** The instant the Owner means by `date time`; null when that hour is skipped. */
+export function localInstant(date: LocalDate, time: Clock): Date | null {
+  return wallInstant(dateWall(date) + clockMinutes(time) * minute)
+}
+
+export function santiagoDateOf(instant: Date): LocalDate {
+  // SAFETY: an ISO string's first ten characters are a real YYYY-MM-DD date.
+  return new Date(santiagoWall(instant.getTime())).toISOString().slice(0, 10) as LocalDate
+}
+
+export function santiagoClockOf(instant: Date): Clock {
+  // SAFETY: characters 11–16 of an ISO string are a 24h HH:MM clock.
+  return new Date(santiagoWall(instant.getTime())).toISOString().slice(11, 16) as Clock
+}
+
+/** Calendar arithmetic on the date itself, so a clock change can't shift it. */
+export function addDays(date: LocalDate, days: number): LocalDate {
+  // SAFETY: an ISO string's first ten characters are a real YYYY-MM-DD date.
+  return new Date(dateWall(date) + days * day).toISOString().slice(0, 10) as LocalDate
+}
+
+export function weekdayOf(date: LocalDate): Weekday {
+  return weekdays[new Date(dateWall(date)).getUTCDay()]!
+}
+
+/**
+ * A time the model wrote, as the Owner would name it. `instant` is null when
+ * the clock time falls in the skipped spring hour.
+ */
+export function resolveTime(value: z.output<typeof timeInput>) {
+  const { wall, zone } = parse(value)
+  if (zone) {
+    const instant = new Date(wall - zoneOffset(zone))
+    return {
+      date: santiagoDateOf(instant),
+      time: santiagoClockOf(instant),
+      instant,
+    }
+  }
+  const at = new Date(wall).toISOString()
+  return {
+    // SAFETY: an ISO string's first ten characters are a real YYYY-MM-DD date.
+    date: at.slice(0, 10) as LocalDate,
+    // SAFETY: characters 11–16 of an ISO string are a 24h HH:MM clock.
+    time: at.slice(11, 16) as Clock,
+    instant: wallInstant(wall),
+  }
 }
 
 const santiagoDate = (instant: number) => Math.floor(santiagoWall(instant) / day)
@@ -185,11 +290,32 @@ const clockFormat = new Intl.DateTimeFormat('es-CL', {
   hourCycle: 'h23',
 })
 
-function describeSantiagoDay(instant: Date) {
+const calendarDayFormat = new Intl.DateTimeFormat('es-CL', {
+  timeZone: 'UTC',
+  weekday: 'long',
+  day: 'numeric',
+  month: 'long',
+})
+
+function spokenDay(format: Intl.DateTimeFormat, instant: Date) {
   const parts = Object.fromEntries(
-    dayFormat.formatToParts(instant).map((part) => [part.type, part.value]),
+    format.formatToParts(instant).map((part) => [part.type, part.value]),
   )
   return `${parts.weekday} ${parts.day} de ${parts.month}`
+}
+
+function describeSantiagoDay(instant: Date) {
+  return spokenDay(dayFormat, instant)
+}
+
+/** "domingo 6 de septiembre", read off the date itself, so it exists even in a DST gap. */
+export function describeLocalDay(date: LocalDate) {
+  return spokenDay(calendarDayFormat, new Date(dateWall(date)))
+}
+
+/** "17 de noviembre" */
+export function describeLocalDate(date: LocalDate) {
+  return describeLocalDay(date).replace(/^\S+ /, '')
 }
 
 /** "jueves 1 de octubre, 17:00" */

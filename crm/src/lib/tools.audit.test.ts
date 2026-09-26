@@ -13,6 +13,8 @@ import {
   payments,
   services,
 } from '#/db/schema'
+import { readRefusal } from '#/lib/refusal'
+import { refusalOf } from '#/test/refusals'
 import {
   createAppointment,
   createClient,
@@ -59,8 +61,8 @@ beforeEach(async () => {
   await adminDb.delete(services).where(eq(services.owner_id, ownerId))
 })
 
-test('a failed write is audited and reports its own error', async () => {
-  await expect(
+test('a failed write is audited with the refusal the model saw', async () => {
+  const refusal = await refusalOf(
     runOwnerTool(ownerId, () =>
       createAppointment.execute({
         client_id: 1,
@@ -69,22 +71,58 @@ test('a failed write is audited and reports its own error', async () => {
         mode: 'online',
       }),
     ),
-  ).rejects.toThrow(/Service 999999 not found/)
-
-  const [audit] = await failedAudits('createAppointment')
-  expect(audit?.error).toMatch(/Service 999999 not found/)
-})
-
-test('a write Postgres rejects is audited with the driver error, not the SQL', async () => {
-  const failure = runOwnerTool(ownerId, () =>
-    createPayment.execute({ client_id: 999999, amount: 1000 }),
   )
 
-  await expect(failure).rejects.toThrow(/foreign key/)
-  await expect(failure).rejects.not.toThrow(/Failed query/)
+  expect(refusal).toEqual(
+    expect.objectContaining({ kind: 'not_found', entity: 'service', id: 999999 }),
+  )
+  const [audit] = await failedAudits('createAppointment')
+  expect(readRefusal(audit?.error ?? '')).toEqual(refusal)
+})
+
+test('a write Postgres rejects refuses by constraint, never with the SQL', async () => {
+  const refusal = await refusalOf(
+    runOwnerTool(ownerId, () =>
+      createPayment.execute({ client_id: 999999, amount: 1000 }),
+    ),
+  )
+
+  expect(refusal).toEqual(
+    expect.objectContaining({ kind: 'not_found', entity: 'client', id: 999999 }),
+  )
   const [audit] = await failedAudits('createPayment')
-  expect(audit?.error).toMatch(/foreign key/)
-  expect(audit?.error).not.toMatch(/Failed query|params/)
+  expect(readRefusal(audit?.error ?? '')).toEqual(refusal)
+  expect(audit?.error).not.toMatch(/Failed query|params|insert/)
+})
+
+test('an unplanned failure is internal to the model; the audit keeps its cause', async () => {
+  const client = await runOwnerTool(ownerId, () =>
+    createClient.execute({ name: 'Rosa' }),
+  )
+  const service = await runOwnerTool(ownerId, () =>
+    createService.execute({ name: 'Sesión', price: 40000, unit: 'flat' }),
+  )
+
+  const refusal = await refusalOf(
+    runOwnerTool(ownerId, () =>
+      createAppointment.execute({
+        client_id: client.id,
+        service_id: service.id,
+        starts_at: '2026-09-24T13:00:00Z',
+        duration_minutes: 60,
+        mode: 'online',
+        price: 3_000_000_000,
+      }),
+    ),
+  )
+
+  expect(refusal).toEqual({
+    kind: 'internal',
+    say: 'Hubo un problema del sistema y esto no se guardó. Puedes intentarlo de nuevo en un rato.',
+  })
+  const [audit] = await failedAudits('createAppointment')
+  expect(readRefusal(audit?.error ?? '')).toEqual(refusal)
+  expect(JSON.parse(audit?.error ?? '{}').cause).toMatch(/out of range/)
 })
 
 test('concurrent bookings of one slot leave exactly one appointment', async () => {
@@ -116,7 +154,19 @@ test('concurrent bookings of one slot leave exactly one appointment', async () =
   expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
   for (const result of results) {
     if (result.status === 'rejected') {
-      expect(String(result.reason)).toMatch(/Time conflict/)
+      expect(readRefusal(result.reason.message)).toEqual(
+        expect.objectContaining({
+          kind: 'conflict',
+          say: 'El jueves 24 de septiembre a las 10:00 ya tienes a Rosa, de 10:00 a 11:00.',
+          dates: [
+            expect.objectContaining({
+              date: '2026-09-24',
+              time: '10:00',
+              problem: 'taken',
+            }),
+          ],
+        }),
+      )
     }
   }
   expect(await failedAudits('createAppointment')).toHaveLength(2)
@@ -151,7 +201,7 @@ test("a payment linked to another client's appointment is refused", async () => 
     }),
   )
 
-  await expect(
+  const refusal = await refusalOf(
     runOwnerTool(ownerId, () =>
       createPayment.execute({
         client_id: pedro.id,
@@ -159,7 +209,14 @@ test("a payment linked to another client's appointment is refused", async () => 
         amount: 40000,
       }),
     ),
-  ).rejects.toThrow(/payments_appointment_client_fk/)
+  )
+
+  expect(refusal).toEqual(
+    expect.objectContaining({
+      kind: 'invalid_input',
+      issues: [expect.objectContaining({ path: 'appointment_id' })],
+    }),
+  )
 
   const stored = await adminDb
     .select()

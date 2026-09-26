@@ -1,12 +1,27 @@
 import { formatJson, isJsonNumber, isJsonObject, isJsonString, type JsonValue } from '#/lib/json'
+import { readRefusal, refusalText } from '#/lib/refusal'
 import { crmToolName } from '#/lib/write-receipts'
 
 /** One code-mode event, read down to what the work margin renders from it. */
 export type CodeModeEvent =
   | { kind: 'call'; name: string; args: JsonValue }
   | { kind: 'result'; name: string; result: JsonValue; durationMs?: number }
-  | { kind: 'error'; name: string; message: string; durationMs?: number }
-  | { kind: 'failed'; message: string; durationMs?: number }
+  | {
+      kind: 'error'
+      name: string
+      message: string
+      refused: boolean
+      durationMs?: number
+    }
+  | { kind: 'failed'; message: string; refused: boolean; durationMs?: number }
+
+/** A refusal reads as the sentence it carries; anything else as its own text. */
+function readFailure(message: string) {
+  const refusal = readRefusal(message)
+  return refusal
+    ? { message: refusalText(refusal), refused: true }
+    : { message, refused: false }
+}
 
 /**
  * These payloads are the code-mode tool's own internals, not a contract it owes
@@ -30,10 +45,11 @@ export function readCodeModeEvent(
     return {
       kind: 'failed',
       durationMs,
-      message:
+      ...readFailure(
         isJsonObject(error) && isJsonString(error.message)
           ? error.message
           : 'execution failed',
+      ),
     }
   }
 
@@ -44,7 +60,12 @@ export function readCodeModeEvent(
   if (type === 'code_mode:external_result')
     return { kind: 'result', name, durationMs, result: data.result ?? null }
   if (type === 'code_mode:external_error')
-    return { kind: 'error', name, durationMs, message: formatJson(data.error) }
+    return {
+      kind: 'error',
+      name,
+      durationMs,
+      ...readFailure(formatJson(data.error)),
+    }
   return null
 }
 

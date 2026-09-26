@@ -7,7 +7,6 @@ import {
   ilike,
   isNull,
   lt,
-  ne,
   sql,
 } from 'drizzle-orm'
 import { DatabaseError } from 'pg'
@@ -23,14 +22,25 @@ import {
   services,
 } from '#/db/schema'
 import {
-  describeSantiagoSpan,
+  refuse,
+  RefusalError,
+  type ConflictFrame,
+  type ProblemFound,
+  type RefusalEntity,
+} from '#/lib/refusal'
+import {
+  NonexistentClockTime,
   describeSantiagoTime,
   dateOrTimeInput,
   rangeInput,
+  resolveTime,
+  santiagoClockOf,
+  santiagoDateOf,
   startOf,
   timeInput,
-  toInstant,
   toRange,
+  type Clock,
+  type LocalDate,
 } from '#/lib/santiago-time'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 
@@ -60,16 +70,6 @@ type AuditObject = { [key: string]: AuditValue }
 /** The object case of an audited value, without discarding the caller's type. */
 function isAuditObject<T>(value: T): value is T & AuditObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** True for the rows and inputs that carry the numeric primary key. */
-function hasNumericId<T>(value: T): value is T & { id: number } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'id' in value &&
-    typeof value.id === 'number'
-  )
 }
 
 function containsNotes(value: AuditValue): boolean {
@@ -103,19 +103,6 @@ class RestrictedNotesError extends Error {}
  */
 const auditedFailures = new WeakSet<Error>()
 
-/**
- * drizzle's own message is the SQL plus every parameter, notes included; the
- * driver error underneath says what actually went wrong.
- */
-function describeQueryError(error: DrizzleQueryError) {
-  const cause = error.cause
-  if (!(cause instanceof DatabaseError)) return 'Database write failed'
-  // A concurrent booking that slipped past assertNoOverlap.
-  if (cause.constraint === 'appointments_no_overlap')
-    return 'Time conflict with another appointment'
-  return cause.message
-}
-
 async function enforceNotesBoundary(input: AuditValue) {
   const [owner] = await db
     .select({ restricted: owners.restricted_notes })
@@ -128,6 +115,283 @@ async function enforceNotesBoundary(input: AuditValue) {
   return owner.restricted
 }
 
+/**
+ * What a constraint violation means for the caller. Tool code checks first so
+ * refusals read well; these are the backstops for races, retries and bugs.
+ * CHECK constraints are absent on purpose: zod stops those values first, so a
+ * violation is a bug and refuses as internal.
+ */
+type ConstraintRefusal =
+  /** Another write took the time first; writeWithoutClashes re-reads and lists it. */
+  | { kind: 'clash' }
+  | { kind: 'missing'; entity: RefusalEntity; field: string }
+  | { kind: 'fix'; path: string; problem: string }
+
+const refusalByConstraint = new Map<string, ConstraintRefusal>([
+  ['appointments_no_overlap', { kind: 'clash' }],
+  [
+    'appointments_client_owner_fk',
+    { kind: 'missing', entity: 'client', field: 'client_id' },
+  ],
+  [
+    'appointments_service_owner_fk',
+    { kind: 'missing', entity: 'service', field: 'service_id' },
+  ],
+  [
+    'payments_client_owner_fk',
+    { kind: 'missing', entity: 'client', field: 'client_id' },
+  ],
+  [
+    'payments_appointment_owner_fk',
+    { kind: 'missing', entity: 'appointment', field: 'appointment_id' },
+  ],
+  [
+    'payments_appointment_client_fk',
+    {
+      kind: 'fix',
+      path: 'appointment_id',
+      problem:
+        "that appointment belongs to another client; use that client's id or leave appointment_id out",
+    },
+  ],
+])
+
+function driverError<TError>(error: TError) {
+  return error instanceof DrizzleQueryError && error.cause instanceof DatabaseError
+    ? error.cause
+    : null
+}
+
+function constraintRefusal<TError>(error: TError) {
+  const constraint = driverError(error)?.constraint
+  return constraint ? refusalByConstraint.get(constraint) : undefined
+}
+
+const looseRecord = z.looseObject({})
+
+/** The number `value` holds under `field`, when it is an object that has one. */
+function numberAt<T>(value: T, field: string) {
+  const record = looseRecord.safeParse(value)
+  const found = z.number().safeParse(record.success ? record.data[field] : null)
+  return found.success ? found.data : null
+}
+
+/**
+ * The single mapping from "something threw" to a refusal. Anything unplanned
+ * is `internal`: its technical cause goes to the server log and the audit row,
+ * never to the model, since a driver message can carry SQL and notes.
+ */
+function asRefusal<TError, TInput>(
+  error: TError,
+  input: TInput,
+  write: boolean,
+): RefusalError {
+  if (error instanceof RefusalError) return error
+  if (error instanceof RestrictedNotesError) return refuse.notesOff()
+  if (error instanceof NonexistentClockTime)
+    return refuse.invalidInput([{ path: '(input)', problem: error.message }])
+  const mapped = constraintRefusal(error)
+  const missingId = mapped?.kind === 'missing' ? numberAt(input, mapped.field) : null
+  if (mapped?.kind === 'missing' && missingId !== null)
+    return refuse.notFound(mapped.entity, missingId)
+  if (mapped?.kind === 'fix')
+    return refuse.invalidInput([{ path: mapped.path, problem: mapped.problem }])
+  console.error('tool failed', technicalCause(error))
+  return refuse.internal(write)
+}
+
+function technicalCause<TError>(error: TError) {
+  const driver = driverError(error)
+  if (driver) return driver.message
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+}
+
+/** The audit row keeps what the model saw, plus the cause when that was hidden. */
+function auditError<TError>(refusal: RefusalError, error: TError) {
+  if (refusal.refusal.kind !== 'internal') return refusal.message
+  return JSON.stringify({ ...refusal.refusal, cause: technicalCause(error) })
+}
+
+/**
+ * Zod issues as one refusal: `ask` when every issue is a top-level field the
+ * model left out and the tool's guide knows how to ask the Owner for;
+ * otherwise `invalid_input` with paths, for the model to fix.
+ */
+function fromZod<TInput>(
+  issues: ReadonlyArray<z.core.$ZodIssue>,
+  raw: TInput,
+  asks: ReadonlyMap<string, string>,
+) {
+  const sent = looseRecord.safeParse(raw)
+  const missing = issues.map((issue) => {
+    if (issue.path.length !== 1) return null
+    const field = String(issue.path[0])
+    const present = sent.success && sent.data[field] !== undefined
+    const question = asks.get(field)
+    return present || !question ? null : { field, question }
+  })
+  if (missing.length > 0 && missing.every((each) => each !== null)) {
+    const fields = [...new Map(missing.map((each) => [each.field, each.question]))]
+    return refuse.askFor(
+      fields.map(([field]) => field),
+      fields.map(([, question]) => question),
+    )
+  }
+  return refuse.invalidInput(
+    issues.map((issue) => ({
+      path: issue.path.join('.') || '(input)',
+      problem: issue.message,
+    })),
+  )
+}
+
+/**
+ * Owner-facing Spanish beside each tool. `asks` phrases the question for a
+ * required field the model left out; the whole guide also documents the tool
+ * for the Owner.
+ */
+export type ToolGuide<TInput> = {
+  does: string
+  asks?: Partial<{ [field in keyof TInput & string]: string }>
+  wont?: string
+}
+
+export type CrmTool<TSchema extends z.ZodType, TOutput extends z.ZodType, TResult> = {
+  name: string
+  /** Model-facing English. */
+  description: string
+  guide: ToolGuide<z.input<TSchema>>
+  inputSchema: TSchema
+  outputSchema: TOutput
+  /** Parses its own input; throws only RefusalError. */
+  execute: (input: z.input<TSchema>) => Promise<TResult>
+}
+
+function asksOf<TInput>(guide: ToolGuide<TInput>) {
+  return new Map<string, string>(
+    Object.entries(guide.asks ?? {}).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  )
+}
+
+function parseInput<TSchema extends z.ZodType>(
+  schema: TSchema,
+  raw: z.input<TSchema>,
+  guide: ToolGuide<z.input<TSchema>>,
+) {
+  const parsed = schema.safeParse(raw)
+  if (!parsed.success) throw fromZod(parsed.error.issues, raw, asksOf(guide))
+  return parsed.data
+}
+
+/** A write that resolved no row: the id it named does not exist for this Owner. */
+function missingRecord<TInput>(entity: AuditEntity, input: TInput) {
+  const id = numberAt(input, 'id')
+  if (entity !== 'owner' && id !== null) return refuse.notFound(entity, id)
+  return refuse.internal(true)
+}
+
+/**
+ * An audited write. Invalid input refuses before anything runs, so it writes
+ * no audit row. Everything after runs in a savepoint: a failure rolls back
+ * alone and leaves the transaction able to record it.
+ */
+function writeTool<
+  TSchema extends z.ZodType,
+  TOutput extends z.ZodType,
+  TResult,
+  TBefore = null,
+>(spec: {
+  name: string
+  entity: AuditEntity
+  description: string
+  guide: ToolGuide<z.input<TSchema>>
+  input: TSchema
+  output: TOutput
+  before?: (input: z.output<TSchema>) => Promise<TBefore>
+  run: (input: z.output<TSchema>) => Promise<TResult | undefined>
+}): CrmTool<TSchema, TOutput, TResult> {
+  return {
+    name: spec.name,
+    description: spec.description,
+    guide: spec.guide,
+    inputSchema: spec.input,
+    outputSchema: spec.output,
+    execute: async (raw) => {
+      const input = parseInput(spec.input, raw, spec.guide)
+      // SAFETY: a tool input is the JSON the model called the tool with.
+      const audited = raw as AuditValue
+      let before: TBefore | null = null
+      let entityId = numberAt(input, 'id')
+      let restricted = false
+      try {
+        return await db.transaction(async () => {
+          restricted = await enforceNotesBoundary(audited)
+          before = spec.before ? await spec.before(input) : null
+          if (restricted) before = redactNotes(before)
+          const result = await spec.run(input)
+          if (result === undefined) throw missingRecord(spec.entity, input)
+          entityId = numberAt(result, 'id') ?? entityId
+          await db.insert(audit_log).values({
+            tool_name: spec.name,
+            input: restricted ? redactNotes(audited) : audited,
+            entity: spec.entity,
+            entity_id: entityId,
+            before,
+            ok: true,
+            error: null,
+          })
+          return restricted ? redactNotes(result) : result
+        })
+      } catch (error) {
+        const refusal = asRefusal(error, input, true)
+        if (error instanceof RestrictedNotesError) restricted = true
+        await db.insert(audit_log).values({
+          tool_name: spec.name,
+          input: restricted ? redactNotes(audited) : audited,
+          entity: spec.entity,
+          entity_id: entityId,
+          before,
+          ok: false,
+          error: auditError(refusal, error),
+        })
+        auditedFailures.add(refusal)
+        throw refusal
+      }
+    },
+  }
+}
+
+/** A read: parsed, notes-bounded, never audited. */
+function readTool<TSchema extends z.ZodType, TOutput extends z.ZodType, TResult>(spec: {
+  name: string
+  description: string
+  guide: ToolGuide<z.input<TSchema>>
+  input: TSchema
+  output: TOutput
+  run: (input: z.output<TSchema>) => Promise<TResult>
+}): CrmTool<TSchema, TOutput, TResult> {
+  return {
+    name: spec.name,
+    description: spec.description,
+    guide: spec.guide,
+    inputSchema: spec.input,
+    outputSchema: spec.output,
+    execute: async (raw) => {
+      const input = parseInput(spec.input, raw, spec.guide)
+      try {
+        // SAFETY: a tool input is the JSON the model called the tool with.
+        const restricted = await enforceNotesBoundary(raw as AuditValue)
+        const result = await spec.run(input)
+        return restricted ? redactNotes(result) : result
+      } catch (error) {
+        throw asRefusal(error, input, false)
+      }
+    },
+  }
+}
+
 function auditedExecute<TSchema extends z.ZodType, TResult, TBefore = null>(
   toolName: string,
   entity: AuditEntity,
@@ -135,54 +399,16 @@ function auditedExecute<TSchema extends z.ZodType, TResult, TBefore = null>(
   operation: (input: z.output<TSchema>) => Promise<TResult>,
   getBefore?: (input: z.output<TSchema>) => Promise<TBefore>,
 ) {
-  return async (input: z.input<TSchema>) => {
-    let before: TBefore | null = null
-    let entityId: number | null = null
-    let restricted = false
-    try {
-      // A savepoint, so a failed write — even one that errored in Postgres —
-      // rolls back alone and leaves the transaction able to record it.
-      return await db.transaction(async () => {
-        // SAFETY: a tool input is the JSON the model called the tool with.
-        restricted = await enforceNotesBoundary(input as AuditValue)
-        const parsed = schema.parse(input)
-        if (hasNumericId(parsed)) entityId = parsed.id
-        before = getBefore ? await getBefore(parsed) : null
-        if (restricted) before = redactNotes(before)
-        const result = await operation(parsed)
-        if (hasNumericId(result)) entityId = result.id
-        await db.insert(audit_log).values({
-          tool_name: toolName,
-          input: restricted ? redactNotes(input) : input,
-          entity,
-          entity_id: entityId,
-          before,
-          ok: true,
-          error: null,
-        })
-        return restricted ? redactNotes(result) : result
-      })
-    } catch (error) {
-      if (error instanceof RestrictedNotesError) restricted = true
-      const failure =
-        error instanceof DrizzleQueryError
-          ? new Error(describeQueryError(error), { cause: error })
-          : error
-      await db.insert(audit_log).values({
-        tool_name: toolName,
-        input: restricted ? redactNotes(input) : input,
-        entity,
-        entity_id: entityId,
-        before,
-        ok: false,
-        error: failure instanceof Error ? failure.message : String(failure),
-      })
-      const recorded =
-        failure instanceof Error ? failure : new Error(String(failure))
-      auditedFailures.add(recorded)
-      throw recorded
-    }
-  }
+  return writeTool({
+    name: toolName,
+    entity,
+    description: '',
+    guide: { does: '' },
+    input: schema,
+    output: schema,
+    before: getBefore,
+    run: operation,
+  }).execute
 }
 
 /**
@@ -212,13 +438,14 @@ function parsedExecute<TSchema extends z.ZodType, TResult>(
   schema: TSchema,
   operation: (input: z.output<TSchema>) => Promise<TResult>,
 ) {
-  return async (input: z.input<TSchema>) => {
-    // SAFETY: a tool input is the JSON the model called the tool with.
-    const restricted = await enforceNotesBoundary(input as AuditValue)
-    const parsed = schema.parse(input)
-    const result = await operation(parsed)
-    return restricted ? redactNotes(result) : result
-  }
+  return readTool({
+    name: '',
+    description: '',
+    guide: { does: '' },
+    input: schema,
+    output: schema,
+    run: operation,
+  }).execute
 }
 
 /**
@@ -400,21 +627,21 @@ const createClientInput = z.object({
   notes: z.string().optional(),
 })
 
-export const createClient = {
+export const createClient = writeTool({
   name: 'createClient',
+  entity: 'client',
   description: 'Create a client',
-  inputSchema: createClientInput,
-  outputSchema: clientRecord,
-  execute: auditedExecute(
-    'createClient',
-    'client',
-    createClientInput,
-    async (values) => {
-      const [client] = await db.insert(clients).values(values).returning()
-      return client
-    },
-  ),
-}
+  guide: {
+    does: 'Guarda un cliente nuevo con su nombre y, si quieres, correo, teléfono y notas.',
+    asks: { name: '¿Cómo se llama?' },
+  },
+  input: createClientInput,
+  output: clientRecord,
+  run: async (values) => {
+    const [client] = await db.insert(clients).values(values).returning()
+    return client
+  },
+})
 
 const createServiceInput = z.object({
   name: z.string(),
@@ -566,111 +793,104 @@ const updateClientInput = z.object({
   notes: z.string().optional(),
 })
 
-export const updateClient = {
+export const updateClient = writeTool({
   name: 'updateClient',
+  entity: 'client',
   description: 'Update a client',
-  inputSchema: updateClientInput,
-  outputSchema: clientRecord.optional(),
-  execute: auditedExecute(
-    'updateClient',
-    'client',
-    updateClientInput,
-    async ({ id, ...fields }) => {
-      const [client] = await db
-        .update(clients)
-        .set({ ...fields, updated_at: sql`now()` })
-        .where(eq(clients.id, id))
-        .returning()
-      return client
-    },
-    async ({ id }) => {
-      const [client] = await db
-        .select()
-        .from(clients)
-        .where(eq(clients.id, id))
-      return client
-    },
-  ),
-}
+  guide: { does: 'Cambia el nombre, correo, teléfono o notas de un cliente.' },
+  input: updateClientInput,
+  output: clientRecord,
+  before: findClient,
+  run: async ({ id, ...fields }) => {
+    const [client] = await db
+      .update(clients)
+      .set({ ...fields, updated_at: sql`now()` })
+      .where(eq(clients.id, id))
+      .returning()
+    return client
+  },
+})
 
 const softDeleteClientInput = z.object({
   id: z.number(),
 })
 
-export const softDeleteClient = {
+export const softDeleteClient = writeTool({
   name: 'softDeleteClient',
-  description: 'Soft delete a client',
-  inputSchema: softDeleteClientInput,
-  outputSchema: clientRecord.optional(),
-  execute: auditedExecute(
-    'softDeleteClient',
-    'client',
-    softDeleteClientInput,
-    async ({ id }) => {
-      const blockingAppointments = await db
-        .select({ id: appointments.id, starts_at: appointments.starts_at })
-        .from(appointments)
-        .where(
-          and(
-            eq(appointments.client_id, id),
-            eq(appointments.status, 'scheduled'),
-            gt(appointments.starts_at, sql`now()`),
-            isNull(appointments.deleted_at),
-          ),
-        )
-      if (blockingAppointments.length)
-        throw new Error(
-          `Client ${id} has scheduled future appointments: ${blockingAppointments
-            .map(
-              (appointment) =>
-                `${appointment.id} (${appointment.starts_at.toISOString()})`,
-            )
-            .join(', ')}`,
-        )
-      const [client] = await db
-        .update(clients)
-        .set({ deleted_at: sql`now()` })
-        .where(eq(clients.id, id))
-        .returning()
-      return client
-    },
-    async ({ id }) => {
-      const [client] = await db
-        .select()
-        .from(clients)
-        .where(eq(clients.id, id))
-      return client
-    },
-  ),
-}
+  entity: 'client',
+  description:
+    'Soft delete a client. Refused while the client has scheduled appointments from now on.',
+  guide: {
+    does: 'Borra un cliente. Se puede recuperar.',
+    wont: 'No borra a alguien con citas agendadas desde hoy: primero hay que cancelarlas o borrarlas.',
+  },
+  input: softDeleteClientInput,
+  output: clientRecord,
+  before: findClient,
+  run: async ({ id }) => {
+    const client = await findClient({ id })
+    if (!client) return undefined
+    const upcoming = await db
+      .select({ id: appointments.id, starts_at: appointments.starts_at })
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.client_id, id),
+          eq(appointments.status, 'scheduled'),
+          gt(appointments.starts_at, sql`now()`),
+          isNull(appointments.deleted_at),
+        ),
+      )
+      .orderBy(appointments.starts_at)
+    if (upcoming.length)
+      throw refuse.clientHasFutureAppointments(
+        client.name,
+        upcoming.map((appointment) => ({
+          ...appointment,
+          series_id: null,
+          series_rule: null,
+        })),
+      )
+    const [deleted] = await db
+      .update(clients)
+      .set({ deleted_at: sql`now()` })
+      .where(eq(clients.id, id))
+      .returning()
+    return deleted
+  },
+})
 
 const restoreClientInput = z.object({ id: z.number() })
 
-export const restoreClient = {
+export const restoreClient = writeTool({
   name: 'restoreClient',
+  entity: 'client',
   description: 'Restore a soft-deleted client',
-  inputSchema: restoreClientInput,
-  outputSchema: clientRecord.optional(),
-  execute: auditedExecute(
-    'restoreClient',
-    'client',
-    restoreClientInput,
-    async ({ id }) => {
-      const [client] = await db
-        .update(clients)
-        .set({ deleted_at: null })
-        .where(eq(clients.id, id))
-        .returning()
-      return client
-    },
-    async ({ id }) => {
-      const [client] = await db
-        .select()
-        .from(clients)
-        .where(eq(clients.id, id))
-      return client
-    },
-  ),
+  guide: { does: 'Recupera un cliente borrado.' },
+  input: restoreClientInput,
+  output: clientRecord,
+  before: findClient,
+  run: async ({ id }) => {
+    const [client] = await db
+      .update(clients)
+      .set({ deleted_at: null })
+      .where(eq(clients.id, id))
+      .returning()
+    return client
+  },
+})
+
+async function findClient({ id }: { id: number }) {
+  const [client] = await db.select().from(clients).where(eq(clients.id, id))
+  return client
+}
+
+async function findAppointment({ id }: { id: number }) {
+  const [appointment] = await db
+    .select()
+    .from(appointments)
+    .where(eq(appointments.id, id))
+  return appointment
 }
 
 const findAppointmentsInput = z.object({
@@ -680,42 +900,40 @@ const findAppointmentsInput = z.object({
   status: z.enum(['scheduled', 'completed', 'cancelled', 'no_show']).optional(),
 })
 
-export const findAppointments = {
+export const findAppointments = readTool({
   name: 'findAppointments',
   description:
     'Find appointments by client, time range and status. Returns every appointment that occupies any part of [from, to), earliest first. starts_local and ends_local are the times as the Owner reads them in America/Santiago; use them when talking to the Owner.',
-  inputSchema: findAppointmentsInput,
-  outputSchema: z.array(
+  guide: { does: 'Muestra las citas de un cliente o de un período.' },
+  input: findAppointmentsInput,
+  output: z.array(
     appointmentRecord.extend({
       starts_local: z.string().describe('e.g. jueves 1 de octubre, 17:00'),
       ends_local: z.string(),
     }),
   ),
-  execute: parsedExecute(
-    findAppointmentsInput,
-    async ({ client_id, from, to, status }) => {
-      const { start, end } = toRange(from, to)
-      const rows = await db
-        .select()
-        .from(appointments)
-        .where(
-          and(
-            isNull(appointments.deleted_at),
-            client_id ? eq(appointments.client_id, client_id) : undefined,
-            start ? gt(appointments.ends_at, start) : undefined,
-            end ? lt(appointments.starts_at, end) : undefined,
-            status ? eq(appointments.status, status) : undefined,
-          ),
-        )
-        .orderBy(appointments.starts_at)
-      return rows.map((row) => ({
-        ...row,
-        starts_local: describeSantiagoTime(row.starts_at),
-        ends_local: describeSantiagoTime(row.ends_at),
-      }))
-    },
-  ),
-}
+  run: async ({ client_id, from, to, status }) => {
+    const { start, end } = toRange(from, to)
+    const rows = await db
+      .select()
+      .from(appointments)
+      .where(
+        and(
+          isNull(appointments.deleted_at),
+          client_id ? eq(appointments.client_id, client_id) : undefined,
+          start ? gt(appointments.ends_at, start) : undefined,
+          end ? lt(appointments.starts_at, end) : undefined,
+          status ? eq(appointments.status, status) : undefined,
+        ),
+      )
+      .orderBy(appointments.starts_at)
+    return rows.map((row) => ({
+      ...row,
+      starts_local: describeSantiagoTime(row.starts_at),
+      ends_local: describeSantiagoTime(row.ends_at),
+    }))
+  },
+})
 
 const updateAppointmentInput = z.object({
   id: z.number(),
@@ -727,179 +945,272 @@ const updateAppointmentInput = z.object({
   notes: z.string().optional(),
 })
 
-export const updateAppointment = {
+export const updateAppointment = writeTool({
   name: 'updateAppointment',
-  description: 'Update an appointment',
-  inputSchema: updateAppointmentInput,
-  outputSchema: appointmentRecord.optional(),
-  execute: auditedExecute(
-    'updateAppointment',
-    'appointment',
-    updateAppointmentInput,
-    async ({ id, starts_at, duration_minutes, ...fields }) => {
-      const set: PgUpdateSetSource<typeof appointments> = {
-        ...fields,
-        updated_at: sql`now()`,
-      }
-      const timeChanged = starts_at != null || duration_minutes != null
-      if (timeChanged || fields.status === 'scheduled') {
-        const [existing] = await db
-          .select()
-          .from(appointments)
-          .where(eq(appointments.id, id))
-        if (!existing) throw new Error(`Appointment ${id} not found`)
-        const newStarts = starts_at ? toInstant(starts_at) : existing.starts_at
-        const duration =
-          duration_minutes ??
-          (existing.ends_at.getTime() - existing.starts_at.getTime()) / 60000
-        const newEnds = new Date(newStarts.getTime() + duration * 60000)
-        await assertNoOverlap(newStarts, newEnds, id)
-        if (timeChanged) {
-          set.starts_at = newStarts
-          set.ends_at = newEnds
-        }
-      }
+  entity: 'appointment',
+  description:
+    'Update an appointment. A new time is refused when it collides with another scheduled appointment; the refusal says with which.',
+  guide: {
+    does: 'Cambia la hora, duración, estado, precio, modalidad o notas de una cita.',
+    wont: 'No la mueve a una hora que choca con otra cita.',
+  },
+  input: updateAppointmentInput,
+  output: appointmentRecord,
+  before: findAppointment,
+  run: async ({ id, starts_at, duration_minutes, ...fields }) => {
+    const existing = await findAppointment({ id })
+    if (!existing) return undefined
+    const set: PgUpdateSetSource<typeof appointments> = {
+      ...fields,
+      updated_at: sql`now()`,
+    }
+    const update = async () => {
       const [appointment] = await db
         .update(appointments)
         .set(set)
         .where(eq(appointments.id, id))
         .returning()
       return appointment
-    },
-    async ({ id }) => {
-      const [appointment] = await db
-        .select()
-        .from(appointments)
-        .where(eq(appointments.id, id))
-      return appointment
-    },
-  ),
-}
+    }
+    const moving = starts_at !== undefined || duration_minutes !== undefined
+    if (!moving && fields.status !== 'scheduled') return update()
+    const at = starts_at
+      ? resolveTime(starts_at)
+      : {
+          date: santiagoDateOf(existing.starts_at),
+          time: santiagoClockOf(existing.starts_at),
+          instant: existing.starts_at,
+        }
+    const minutes =
+      duration_minutes ??
+      (existing.ends_at.getTime() - existing.starts_at.getTime()) / 60_000
+    return writeWithoutClashes(
+      'move',
+      [{ date: at.date, time: at.time, span: spanOf(at.instant, minutes) }],
+      async ([placed]) => {
+        if (moving && placed) {
+          set.starts_at = placed.span.starts_at
+          set.ends_at = placed.span.ends_at
+        }
+        return update()
+      },
+      { ignore: [id] },
+    )
+  },
+})
 
 const softDeleteAppointmentInput = z.object({
   id: z.number(),
 })
 
-export const softDeleteAppointment = {
+export const softDeleteAppointment = writeTool({
   name: 'softDeleteAppointment',
-  description: 'Soft delete an appointment',
-  inputSchema: softDeleteAppointmentInput,
-  outputSchema: appointmentRecord.optional(),
-  execute: auditedExecute(
-    'softDeleteAppointment',
-    'appointment',
-    softDeleteAppointmentInput,
-    async ({ id }) => {
-      const [appointment] = await db
-        .update(appointments)
-        .set({ deleted_at: sql`now()` })
-        .where(eq(appointments.id, id))
-        .returning()
-      return appointment
-    },
-    async ({ id }) => {
-      const [appointment] = await db
-        .select()
-        .from(appointments)
-        .where(eq(appointments.id, id))
-      return appointment
-    },
-  ),
-}
+  entity: 'appointment',
+  description:
+    'Soft delete an appointment booked by mistake. A cancelled appointment is a status: use updateAppointment for that.',
+  guide: {
+    does: 'Borra una cita agendada por error. Se puede recuperar.',
+    wont: 'Una cita cancelada no se borra: queda marcada como cancelada.',
+  },
+  input: softDeleteAppointmentInput,
+  output: appointmentRecord,
+  before: findAppointment,
+  run: async ({ id }) => {
+    const [appointment] = await db
+      .update(appointments)
+      .set({ deleted_at: sql`now()` })
+      .where(eq(appointments.id, id))
+      .returning()
+    return appointment
+  },
+})
 
 const restoreAppointmentInput = z.object({ id: z.number() })
 
-export const restoreAppointment = {
+export const restoreAppointment = writeTool({
   name: 'restoreAppointment',
+  entity: 'appointment',
   description:
-    'Restore a soft-deleted appointment. Rejects if its time now conflicts.',
-  inputSchema: restoreAppointmentInput,
-  outputSchema: appointmentRecord.optional(),
-  execute: auditedExecute(
-    'restoreAppointment',
-    'appointment',
-    restoreAppointmentInput,
-    async ({ id }) => {
-      const [existing] = await db
-        .select()
-        .from(appointments)
-        .where(eq(appointments.id, id))
-      if (!existing) throw new Error(`Appointment ${id} not found`)
-      await assertNoOverlap(existing.starts_at, existing.ends_at, id)
-      const [appointment] = await db
-        .update(appointments)
-        .set({ deleted_at: null })
-        .where(eq(appointments.id, id))
-        .returning()
-      return appointment
-    },
-    async ({ id }) => {
-      const [appointment] = await db
-        .select()
-        .from(appointments)
-        .where(eq(appointments.id, id))
-      return appointment
-    },
-  ),
-}
+    'Restore a soft-deleted appointment. Refused when its time now collides with another scheduled appointment.',
+  guide: {
+    does: 'Recupera una cita borrada.',
+    wont: 'No la recupera si su hora ya está ocupada.',
+  },
+  input: restoreAppointmentInput,
+  output: appointmentRecord,
+  before: findAppointment,
+  run: async ({ id }) => {
+    const existing = await findAppointment({ id })
+    if (!existing) return undefined
+    return writeWithoutClashes(
+      'restore',
+      [
+        {
+          date: santiagoDateOf(existing.starts_at),
+          time: santiagoClockOf(existing.starts_at),
+          span: { starts_at: existing.starts_at, ends_at: existing.ends_at },
+        },
+      ],
+      async () => {
+        const [appointment] = await db
+          .update(appointments)
+          .set({ deleted_at: null })
+          .where(eq(appointments.id, id))
+          .returning()
+        return appointment
+      },
+      { ignore: [id] },
+    )
+  },
+})
 
 const findClientsInput = z.object({
   query: z.string().optional(),
 })
 
-export const findClients = {
+export const findClients = readTool({
   name: 'findClients',
   description: 'Find active clients by name',
-  inputSchema: findClientsInput,
-  outputSchema: z.array(clientRecord),
-  execute: parsedExecute(
-    findClientsInput,
-    async ({ query }) =>
-      db
-        .select()
-        .from(clients)
-        .where(
-          and(
-            isNull(clients.deleted_at),
-            query ? ilike(clients.name, `%${query}%`) : undefined,
-          ),
+  guide: { does: 'Busca clientes por nombre.' },
+  input: findClientsInput,
+  output: z.array(clientRecord),
+  run: async ({ query }) =>
+    db
+      .select()
+      .from(clients)
+      .where(
+        and(
+          isNull(clients.deleted_at),
+          query ? ilike(clients.name, `%${query}%`) : undefined,
         ),
-  ),
+      ),
+})
+
+type Span = { starts_at: Date; ends_at: Date }
+
+/** One time a write asks for. `span` is null when that clock time is skipped. */
+type Wanted = { date: LocalDate; time: Clock; span: Span | null }
+type Placed = Wanted & { span: Span }
+
+function isPlaced(wanted: Wanted): wanted is Placed {
+  return wanted.span !== null
 }
 
-async function assertNoOverlap(
-  starts_at: Date,
-  ends_at: Date,
-  excludeId?: number,
-) {
-  const [conflict] = await db
-    .select({
-      starts_at: appointments.starts_at,
-      ends_at: appointments.ends_at,
-      client_name: clients.name,
+function spanOf(starts_at: Date | null, minutes: number): Span | null {
+  if (!starts_at) return null
+  return {
+    starts_at,
+    ends_at: new Date(starts_at.getTime() + minutes * 60_000),
+  }
+}
+
+const clashRow = z.object({
+  i: z.number().int(),
+  id: z.number().int(),
+  starts_at: z.coerce.date(),
+  ends_at: z.coerce.date(),
+  name: z.string(),
+})
+
+/**
+ * Every scheduled, live appointment that overlaps any wanted span, in one
+ * statement. Half-open intervals; RLS scopes it to the Owner. `ignore` holds
+ * the appointments being moved or restored, which never clash with themselves.
+ */
+async function findClashes(
+  placed: ReadonlyArray<Placed>,
+  ignore: ReadonlyArray<number>,
+): Promise<Array<ProblemFound>> {
+  if (placed.length === 0) return []
+  const spans = JSON.stringify(
+    placed.map((each, i) => ({
+      i,
+      s: each.span.starts_at.toISOString(),
+      e: each.span.ends_at.toISOString(),
+    })),
+  )
+  const result = await db.execute(sql`
+    select r.i, a.id, a.starts_at, a.ends_at, c.name
+    from jsonb_to_recordset(${spans}::jsonb) as r(i int, s timestamptz, e timestamptz)
+    join ${appointments} a on a.starts_at < r.e and a.ends_at > r.s
+    join ${clients} c on c.id = a.client_id and c.owner_id = a.owner_id
+    where a.status = 'scheduled'
+      and a.deleted_at is null
+      and not (${JSON.stringify(ignore)}::jsonb @> to_jsonb(a.id))
+    order by r.i, a.starts_at
+  `)
+  return z
+    .array(clashRow)
+    .parse(result.rows)
+    .flatMap((row) => {
+      const wanted = placed[row.i]
+      if (!wanted) return []
+      return [
+        {
+          date: wanted.date,
+          time: wanted.time,
+          problem: 'taken' as const,
+          with: {
+            appointment_id: row.id,
+            client: row.name,
+            starts_at: row.starts_at,
+            ends_at: row.ends_at,
+          },
+        },
+      ]
     })
-    .from(appointments)
-    .innerJoin(
-      clients,
-      and(
-        eq(appointments.client_id, clients.id),
-        eq(appointments.owner_id, clients.owner_id),
-      ),
-    )
-    .where(
-      and(
-        eq(appointments.status, 'scheduled'),
-        isNull(appointments.deleted_at),
-        lt(appointments.starts_at, ends_at),
-        gt(appointments.ends_at, starts_at),
-        excludeId ? ne(appointments.id, excludeId) : undefined,
-      ),
-    )
-    .limit(1)
-  if (conflict)
-    throw new Error(
-      `Time conflict with ${conflict.client_name} (${describeSantiagoSpan(conflict.starts_at, conflict.ends_at)})`,
-    )
+}
+
+/**
+ * All of these times are the Owner's, or a conflict listing every problem:
+ * skipped clock hours, the `known` problems the caller found itself, and every
+ * scheduled appointment in the way. Only then does `write` run, in a nested
+ * savepoint. A concurrent booking that slips past the check trips a clash
+ * constraint; it is re-read, now committed, and reported with its dates.
+ */
+async function writeWithoutClashes<T>(
+  frame: ConflictFrame,
+  wanted: ReadonlyArray<Wanted>,
+  write: (placed: Array<Placed>) => Promise<T>,
+  options: {
+    known?: ReadonlyArray<ProblemFound>
+    ignore?: ReadonlyArray<number>
+    priorSkip?: ReadonlyArray<LocalDate>
+  } = {},
+): Promise<T> {
+  const { known = [], ignore = [], priorSkip = [] } = options
+  const placed = wanted.filter(isPlaced)
+  const problems: Array<ProblemFound> = [
+    ...known,
+    ...wanted
+      .filter((each) => !isPlaced(each))
+      .map((each) => ({
+        date: each.date,
+        time: each.time,
+        problem: 'no_such_hour' as const,
+      })),
+    ...(await findClashes(placed, ignore)),
+  ]
+  if (problems.length)
+    throw refuse.conflict(frame, wanted.length, problems, priorSkip)
+  try {
+    return await db.transaction(() => write(placed))
+  } catch (error) {
+    if (constraintRefusal(error)?.kind !== 'clash') throw error
+    const late = await findClashes(placed, ignore)
+    if (late.length === 0) throw error
+    throw refuse.conflict(frame, wanted.length, late, priorSkip)
+  }
+}
+
+/** A class's price: flat services charge once, hourly ones by the minute. */
+function classPrice(
+  service: { unit: 'hour' | 'flat'; price: number },
+  minutes: number,
+) {
+  return service.unit === 'flat'
+    ? service.price
+    : Math.round((minutes / 60) * service.price)
 }
 
 const createAppointmentInput = z.object({
@@ -912,50 +1223,55 @@ const createAppointmentInput = z.object({
   notes: z.string().optional(),
 })
 
-export const createAppointment = {
+export const createAppointment = writeTool({
   name: 'createAppointment',
+  entity: 'appointment',
   description:
-    'Book an appointment at a time the Owner stated. On an overlap error, tell the Owner what it collides with and ask for another time; never suggest one.',
-  inputSchema: createAppointmentInput,
-  outputSchema: appointmentRecord,
-  execute: auditedExecute(
-    'createAppointment',
-    'appointment',
-    createAppointmentInput,
-    async (input) => {
-      const [service] = await db
-        .select()
-        .from(services)
-        .where(eq(services.id, input.service_id))
-      if (!service || service.deleted_at != null)
-        throw new Error(`Service ${input.service_id} not found`)
-      const duration = input.duration_minutes ?? service.duration_minutes
-      if (duration == null)
-        throw new Error('duration_minutes required: service has no default')
-      const starts_at = toInstant(input.starts_at)
-      const ends_at = new Date(starts_at.getTime() + duration * 60000)
-      const price =
-        input.price ??
-        (service.unit === 'flat'
-          ? service.price
-          : Math.round((duration / 60) * service.price))
-      await assertNoOverlap(starts_at, ends_at)
-      const [appointment] = await db
-        .insert(appointments)
-        .values({
-          client_id: input.client_id,
-          service_id: input.service_id,
-          starts_at,
-          ends_at,
-          mode: input.mode,
-          price,
-          notes: input.notes,
-        })
-        .returning()
-      return appointment
+    'Book an appointment at a time the Owner stated. Refused when it collides with another scheduled appointment; the refusal says with which.',
+  guide: {
+    does: 'Agenda una cita con un cliente, el día y a la hora que tú dices.',
+    asks: {
+      client_id: '¿Con quién es la cita?',
+      service_id: '¿Qué servicio es?',
+      starts_at: '¿Qué día y a qué hora?',
+      mode: '¿Es online o presencial?',
     },
-  ),
-}
+    wont: 'No propone horas. Si la hora choca con otra cita, te dice con cuál.',
+  },
+  input: createAppointmentInput,
+  output: appointmentRecord,
+  run: async (input) => {
+    const [service] = await db
+      .select()
+      .from(services)
+      .where(and(eq(services.id, input.service_id), isNull(services.deleted_at)))
+    if (!service) throw refuse.notFound('service', input.service_id)
+    const minutes = input.duration_minutes ?? service.duration_minutes
+    if (minutes == null) throw refuse.askDuration(service.name)
+    const at = resolveTime(input.starts_at)
+    return writeWithoutClashes(
+      'book',
+      [{ date: at.date, time: at.time, span: spanOf(at.instant, minutes) }],
+      async (placed) => {
+        const [appointment] = await db
+          .insert(appointments)
+          .values(
+            placed.map(({ span }) => ({
+              client_id: input.client_id,
+              service_id: input.service_id,
+              starts_at: span.starts_at,
+              ends_at: span.ends_at,
+              mode: input.mode,
+              price: input.price ?? classPrice(service, minutes),
+              notes: input.notes,
+            })),
+          )
+          .returning()
+        return appointment
+      },
+    )
+  },
+})
 
 const createPaymentInput = z.object({
   client_id: z.number(),

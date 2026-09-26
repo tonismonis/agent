@@ -26,6 +26,10 @@ test('prompt injects Owner name, profession, Santiago now, and operating rules',
   expect(prompt).toContain('Never store health information or personal context')
   expect(prompt).toContain('payments.notes holds only the payment method or a reference')
   expect(prompt).not.toContain('Notes are turned off for this Owner')
+  expect(prompt).toContain('"say" means the Owner has to decide or answer.')
+  expect(prompt).toContain('"fix" means the mistake is yours.')
+  expect(prompt).toContain('Never mention functions, fields, JSON, ids or errors to the Owner.')
+  expect(prompt).not.toContain('When a booking fails because of an overlap')
 })
 
 test('restricted Owner prompt adds notes-off rule', () => {

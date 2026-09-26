@@ -2,6 +2,15 @@ import { describe, expect, test } from 'vitest'
 
 import {
   NonexistentClockTime,
+  addDays,
+  describeLocalDay,
+  localDate,
+  localInstant,
+  resolveTime,
+  santiagoClockOf,
+  santiagoDateOf,
+  weekdayOf,
+  clock,
   describeSantiagoSpan,
   describeSantiagoTime,
   rangeEnd,
@@ -76,5 +85,58 @@ describe('Santiago wording', () => {
         new Date('2026-10-02T03:30:00.000Z'),
       ),
     ).toBe('jueves 1 de octubre, 23:30 – viernes 2 de octubre, 00:30')
+  })
+})
+
+describe('Santiago calendar dates', () => {
+  const day = (value: string) => localDate.parse(value)
+  const at = (value: string) => clock.parse(value)
+
+  test('a date and clock time name one instant, or none in the spring gap', () => {
+    expect(localInstant(day('2026-09-06'), at('00:30'))).toBeNull()
+    expect(localInstant(day('2026-09-06'), at('01:00'))?.toISOString()).toBe(
+      '2026-09-06T04:00:00.000Z',
+    )
+    expect(localInstant(day('2027-04-03'), at('23:30'))?.toISOString()).toBe(
+      '2027-04-04T02:30:00.000Z',
+    )
+  })
+
+  test('calendar steps ignore clock changes', () => {
+    expect(addDays(day('2026-09-01'), 7)).toBe('2026-09-08')
+    expect(addDays(day('2027-03-30'), 7)).toBe('2027-04-06')
+    expect(addDays(day('2026-12-29'), 7)).toBe('2027-01-05')
+    expect(weekdayOf(day('2026-09-29'))).toBe('tuesday')
+    expect(weekdayOf(day('2026-09-06'))).toBe('sunday')
+  })
+
+  test('an instant reads back as its Santiago date and clock', () => {
+    const instant = new Date('2026-10-01T02:30:00.000Z')
+    expect(santiagoDateOf(instant)).toBe('2026-09-30')
+    expect(santiagoClockOf(instant)).toBe('23:30')
+  })
+
+  test('the day is named from the date itself, gap or not', () => {
+    expect(describeLocalDay(day('2026-09-06'))).toBe('domingo 6 de septiembre')
+    expect(describeLocalDay(day('2026-11-17'))).toBe('martes 17 de noviembre')
+  })
+
+  test('resolveTime keeps the clock the model wrote', () => {
+    expect(resolveTime('2026-09-06T00:30')).toEqual({
+      date: '2026-09-06',
+      time: '00:30',
+      instant: null,
+    })
+    expect(resolveTime('2026-10-01T20:00:00Z')).toEqual({
+      date: '2026-10-01',
+      time: '17:00',
+      instant: new Date('2026-10-01T20:00:00.000Z'),
+    })
+  })
+
+  test('schemas refuse impossible dates before any tool runs', () => {
+    expect(localDate.safeParse('2026-02-30').success).toBe(false)
+    expect(timeInput.safeParse('2026-02-30T10:00').success).toBe(false)
+    expect(clock.safeParse('24:00').success).toBe(false)
   })
 })

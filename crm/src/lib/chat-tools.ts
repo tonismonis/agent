@@ -1,4 +1,6 @@
-import { toolDefinition } from '@tanstack/ai'
+import { convertSchemaToJsonSchema, toolDefinition } from '@tanstack/ai'
+
+import { RefusalError, refuse } from '#/lib/refusal'
 
 import {
   createAppointment,
@@ -24,8 +26,8 @@ import {
   updatePayment,
   updateService,
 } from '#/lib/tools'
+import { isWriteTool } from '#/lib/write-receipts'
 
-import type { InferSchemaType } from '@tanstack/ai'
 import type { z } from 'zod'
 
 type ToolRunner = <T>(operation: () => Promise<T>) => Promise<T>
@@ -54,21 +56,36 @@ function toJson<TResult>(result: TResult) {
   return JSON.parse(JSON.stringify(result)) as unknown
 }
 
+/**
+ * The bridge boundary. The library gets plain JSON Schemas, which its binding
+ * passes through without validating, so every failure (invalid input
+ * included) reaches the tool and comes back as a refusal. Output is validated
+ * here instead; a mismatch is our bug.
+ */
 function bindTool<
   TSchema extends z.ZodType,
   TOutput extends z.ZodType,
   TResult,
 >(tool: CrmTool<TSchema, TOutput, TResult>, run: ToolRunner) {
+  const write = isWriteTool(tool.name)
   return toolDefinition({
     name: tool.name,
     description: tool.description,
-    inputSchema: tool.inputSchema,
-    outputSchema: tool.outputSchema,
+    inputSchema: convertSchemaToJsonSchema(tool.inputSchema),
+    outputSchema: convertSchemaToJsonSchema(tool.outputSchema),
   }).server(async (input) => {
-    // SAFETY: toolDefinition validates against inputSchema before invoking the server handler, so input matches z.input<TSchema>.
-    const result = await run(() => tool.execute(input as z.input<TSchema>))
-    // SAFETY: toolDefinition validates the returned JSON against outputSchema before it reaches the model.
-    return toJson(result) as InferSchemaType<TOutput>
+    try {
+      // SAFETY: execute parses its raw input itself and refuses anything else.
+      const result = await run(() => tool.execute(input as z.input<TSchema>))
+      const output = tool.outputSchema.safeParse(toJson(result))
+      if (output.success) return output.data
+      console.error('tool output does not match its schema', tool.name, output.error)
+      throw refuse.internal(write)
+    } catch (error) {
+      if (error instanceof RefusalError) throw error
+      console.error('tool failed outside its transaction', tool.name, error)
+      throw refuse.internal(write)
+    }
   })
 }
 

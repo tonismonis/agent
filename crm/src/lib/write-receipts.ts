@@ -32,6 +32,8 @@ export type WorkCall = {
   args?: JsonValue
   result?: JsonValue
   error?: string
+  /** The error is a refusal: the tool said no on purpose and saved nothing. */
+  refused?: true
   durationMs?: number
   /** Set when the call was recovered from code text, so values are unknown. */
   inferred?: boolean

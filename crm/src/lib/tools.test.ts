@@ -2,10 +2,10 @@ import { generateTypeStubs, toolsToBindings } from '@tanstack/ai-code-mode'
 import { eq, inArray } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { aroundEach, beforeAll, beforeEach, expect, test } from 'vitest'
-import { z } from 'zod'
-
 import { db, withOwnerTxn } from '#/db'
 import { chatTools } from './chat-tools'
+import { readRefusal } from './refusal'
+import { refusalOf } from '#/test/refusals'
 import {
   appointments,
   audit_log,
@@ -125,10 +125,11 @@ test('code-mode bindings hand the model validated JSON', async () => {
       deleted_at: null,
     }),
   )
-  // A write against an id that does not exist returns no row at all.
   expect(
-    await bindings.updateClient.execute({ id: 987_654_321 }),
-  ).toBeUndefined()
+    await refusalOf(bindings.updateClient.execute({ id: 987_654_321 })),
+  ).toEqual(
+    expect.objectContaining({ kind: 'not_found', entity: 'client', id: 987_654_321 }),
+  )
 
   await adminDb
     .update(owners)
@@ -159,33 +160,45 @@ test('tool call writes audit_log row', async () => {
   )
 })
 
-test('failed tool call writes audit row with ok=false', async () => {
-  const input = {}
-
-  // @ts-expect-error exercising runtime validation
-  await expect(createClient.execute(input)).rejects.toBeInstanceOf(z.ZodError)
+test('failed tool call writes audit row with ok=false and the refusal', async () => {
+  const refusal = await refusalOf(updateClient.execute({ id: 987_654_321, name: 'X' }))
 
   const rows = await db.select().from(audit_log)
   expect(rows).toHaveLength(1)
   expect(rows[0]).toEqual(
     expect.objectContaining({
-      tool_name: 'createClient',
-      input,
+      tool_name: 'updateClient',
+      input: { id: 987_654_321, name: 'X' },
       entity: 'client',
-      entity_id: null,
+      entity_id: 987_654_321,
       before: null,
       ok: false,
-      error: expect.stringContaining('name'),
     }),
   )
+  expect(readRefusal(rows[0]?.error ?? '')).toEqual(refusal)
 })
 
-test('createClient rejects input without name', async () => {
+test('invalid input is refused before anything runs, with no audit row', async () => {
   // @ts-expect-error exercising runtime validation
-  await expect(createClient.execute({})).rejects.toBeInstanceOf(z.ZodError)
+  const refusal = await refusalOf(createClient.execute({ name: 7 }))
 
-  const stored = await db.select().from(clients)
-  expect(stored).toHaveLength(0)
+  expect(refusal).toEqual(
+    expect.objectContaining({
+      kind: 'invalid_input',
+      issues: [expect.objectContaining({ path: 'name' })],
+    }),
+  )
+  expect(refusal).not.toHaveProperty('say')
+  expect(await db.select().from(audit_log)).toEqual([])
+  expect(await db.select().from(clients)).toEqual([])
+})
+
+test("a missing field the guide can ask for becomes the Owner's question", async () => {
+  // @ts-expect-error exercising runtime validation
+  const refusal = await refusalOf(createClient.execute({}))
+
+  expect(refusal).toEqual({ kind: 'ask', say: '¿Cómo se llama?', needs: ['name'] })
+  expect(await db.select().from(audit_log)).toEqual([])
 })
 
 test('createClient then findClients returns the created client', async () => {
@@ -215,8 +228,8 @@ test('owner cannot update another owner client via tools', async () => {
   )
 
   expect(
-    await updateClient.execute({ id: bobClient.id, name: 'Stolen' }),
-  ).toBeUndefined()
+    await refusalOf(updateClient.execute({ id: bobClient.id, name: 'Stolen' })),
+  ).toEqual(expect.objectContaining({ kind: 'not_found', id: bobClient.id }))
   expect(
     await withOwnerTxn(ownerB, () => findClients.execute({})),
   ).toEqual([
@@ -367,20 +380,30 @@ test('softDeleteClient rejects scheduled future appointments with details', asyn
     unit: 'hour',
     duration_minutes: 60,
   })
-  const startsAt = new Date(Date.now() + 86_400_000)
-  const appointment = await createAppointment.execute({
+  const later = await createAppointment.execute({
     client_id: client.id,
     service_id: service.id,
-    starts_at: startsAt.toISOString(),
+    starts_at: '2036-10-02T17:00',
+    mode: 'online',
+  })
+  const first = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: '2036-10-01T17:00',
     mode: 'online',
   })
 
-  await expect(softDeleteClient.execute({ id: client.id })).rejects.toThrow(
-    new RegExp(`${appointment.id}.*${startsAt.toISOString()}`),
-  )
+  expect(await refusalOf(softDeleteClient.execute({ id: client.id }))).toEqual({
+    kind: 'blocked',
+    say: 'Acme tiene 2 citas agendadas desde hoy, la primera el miércoles 1 de octubre a las 17:00. Hay que cancelarlas o borrarlas antes de borrar a Acme.',
+    appointments: [
+      { id: first.id, starts_local: 'miércoles 1 de octubre, 17:00', series_id: null },
+      { id: later.id, starts_local: 'jueves 2 de octubre, 17:00', series_id: null },
+    ],
+  })
 
   expect(await findClients.execute({ query: 'Acme' })).toHaveLength(1)
-  expect(await findAppointments.execute({ client_id: client.id })).toHaveLength(1)
+  expect(await findAppointments.execute({ client_id: client.id })).toHaveLength(2)
 })
 
 test('softDeleteClient allows past, completed, and cancelled appointments without cascades', async () => {
@@ -492,8 +515,11 @@ test('restoreAppointment rejects a rebooked slot with conflict details', async (
     mode: 'online',
   })
 
-  await expect(restoreAppointment.execute({ id: deleted.id })).rejects.toThrow(
-    'Time conflict with Pedro (sábado 1 de agosto, 11:30–12:30)',
+  expect(await refusalOf(restoreAppointment.execute({ id: deleted.id }))).toEqual(
+    expect.objectContaining({
+      kind: 'conflict',
+      say: 'No pude restaurar la cita. El sábado 1 de agosto a las 11:00 ya tienes a Pedro, de 11:30 a 12:30.',
+    }),
   )
 
   expect((await db.select().from(appointments)).find((a) => a.id === deleted.id))
@@ -614,14 +640,20 @@ test('createAppointment throws when duration unresolvable', async () => {
     unit: 'hour',
   })
 
-  await expect(
-    createAppointment.execute({
-      client_id: client.id,
-      service_id: service.id,
-      starts_at: '2026-08-01T15:00:00.000Z',
-      mode: 'online',
-    }),
-  ).rejects.toThrow(/duration/i)
+  expect(
+    await refusalOf(
+      createAppointment.execute({
+        client_id: client.id,
+        service_id: service.id,
+        starts_at: '2026-08-01T15:00:00.000Z',
+        mode: 'online',
+      }),
+    ),
+  ).toEqual({
+    kind: 'ask',
+    say: '¿Cuánto dura cada sesión de Consulting?',
+    needs: ['duration_minutes'],
+  })
 
   expect(await db.select().from(appointments)).toHaveLength(0)
 })
@@ -643,14 +675,22 @@ test('createAppointment rejects overlap with conflicting client name in message'
     mode: 'online',
   })
 
-  await expect(
-    createAppointment.execute({
-      client_id: pedro.id,
-      service_id: service.id,
-      starts_at: '2026-08-01T15:30:00.000Z',
-      mode: 'online',
+  expect(
+    await refusalOf(
+      createAppointment.execute({
+        client_id: pedro.id,
+        service_id: service.id,
+        starts_at: '2026-08-01T15:30:00.000Z',
+        mode: 'online',
+      }),
+    ),
+  ).toEqual(
+    expect.objectContaining({
+      kind: 'conflict',
+      say: 'El sábado 1 de agosto a las 11:30 ya tienes a Rosa, de 11:00 a 12:00.',
+      of: 1,
     }),
-  ).rejects.toThrow(/Rosa/)
+  )
 
   expect(await db.select().from(appointments)).toHaveLength(1)
 })
@@ -881,14 +921,21 @@ test('createAppointment reads an offsetless time as Santiago clock time', async 
   })
 
   expect(booked.starts_at).toEqual(new Date('2026-10-01T20:00:00.000Z'))
-  await expect(
-    createAppointment.execute({
-      client_id: client.id,
-      service_id: service.id,
-      starts_at: '2026-09-06T00:30',
-      mode: 'in_person',
-    }),
-  ).rejects.toThrow(/does not exist in America\/Santiago/)
+  expect(
+    await refusalOf(
+      createAppointment.execute({
+        client_id: client.id,
+        service_id: service.id,
+        starts_at: '2026-09-06T00:30',
+        mode: 'in_person',
+      }),
+    ),
+  ).toEqual({
+    kind: 'conflict',
+    say: 'El domingo 6 de septiembre no existe la hora 00:30: esa noche se adelanta el reloj.',
+    of: 1,
+    dates: [{ date: '2026-09-06', time: '00:30', problem: 'no_such_hour' }],
+  })
 })
 
 test('createPayment then findPayments sums a month window', async () => {
@@ -1101,15 +1148,17 @@ test('appointment and payment tools write audit rows, ok=false on overlap', asyn
 test('createAppointment throws clean error for nonexistent or deleted service', async () => {
   const rosa = await createClient.execute({ name: 'Rosa' })
 
-  await expect(
-    createAppointment.execute({
-      client_id: rosa.id,
-      service_id: 999999,
-      starts_at: '2026-08-01T15:00:00.000Z',
-      duration_minutes: 60,
-      mode: 'online',
-    }),
-  ).rejects.toThrow(/Service 999999 not found/)
+  expect(
+    await refusalOf(
+      createAppointment.execute({
+        client_id: rosa.id,
+        service_id: 999999,
+        starts_at: '2026-08-01T15:00:00.000Z',
+        duration_minutes: 60,
+        mode: 'online',
+      }),
+    ),
+  ).toEqual(expect.objectContaining({ kind: 'not_found', entity: 'service', id: 999999 }))
 
   const deleted = await createService.execute({
     name: 'Gone',
@@ -1119,23 +1168,29 @@ test('createAppointment throws clean error for nonexistent or deleted service', 
   })
   await softDeleteService.execute({ id: deleted.id })
 
-  await expect(
-    createAppointment.execute({
-      client_id: rosa.id,
-      service_id: deleted.id,
-      starts_at: '2026-08-01T15:00:00.000Z',
-      mode: 'online',
-    }),
-  ).rejects.toThrow(new RegExp(`Service ${deleted.id} not found`))
+  expect(
+    await refusalOf(
+      createAppointment.execute({
+        client_id: rosa.id,
+        service_id: deleted.id,
+        starts_at: '2026-08-01T15:00:00.000Z',
+        mode: 'online',
+      }),
+    ),
+  ).toEqual(expect.objectContaining({ kind: 'not_found', id: deleted.id }))
 })
 
 test('updateAppointment throws clean error for nonexistent appointment', async () => {
-  await expect(
-    updateAppointment.execute({
-      id: 999999,
-      starts_at: '2026-08-01T15:00:00.000Z',
-    }),
-  ).rejects.toThrow(/Appointment 999999 not found/)
+  expect(
+    await refusalOf(
+      updateAppointment.execute({
+        id: 999999,
+        starts_at: '2026-08-01T15:00:00.000Z',
+      }),
+    ),
+  ).toEqual(
+    expect.objectContaining({ kind: 'not_found', entity: 'appointment', id: 999999 }),
+  )
 })
 
 test('restricted notes rejects writes and removes notes from all tool reads', async () => {
@@ -1166,13 +1221,13 @@ test('restricted notes rejects writes and removes notes from all tool reads', as
 
   await expect(
     updateClient.execute({ id: client.id, notes: 'blocked' }),
-  ).rejects.toThrow(/notes are disabled/i)
+  ).rejects.toThrow(/notes_off/)
   await expect(
     updateAppointment.execute({ id: appointment.id, notes: 'blocked' }),
-  ).rejects.toThrow(/notes are disabled/i)
+  ).rejects.toThrow(/notes_off/)
   await expect(
     createPayment.execute({ client_id: client.id, amount: 1, notes: 'cash' }),
-  ).rejects.toThrow(/notes are disabled/i)
+  ).rejects.toThrow(/notes_off/)
 
   for (const rows of [
     await findClients.execute({}),
