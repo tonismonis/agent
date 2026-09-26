@@ -6,6 +6,7 @@ import { createNodeIsolateDriver } from '@tanstack/ai-isolate-node'
 import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { beforeAll, beforeEach, expect, test } from 'vitest'
+import { z } from 'zod'
 
 import {
   appointmentSeries,
@@ -17,7 +18,7 @@ import {
   services,
 } from '#/db/schema'
 import { withRefusalOutput } from './chat-run'
-import { chatTools, createChatTools } from './chat-tools'
+import { bindTool, chatTools, createChatTools } from './chat-tools'
 import { readRefusal } from './refusal'
 import {
   createAppointment,
@@ -74,6 +75,24 @@ test('code-mode hands a plain JSON Schema tool its raw input, unvalidated', asyn
   await toolsToBindings([probe]).probe.execute({ name: 7 })
 
   expect(received).toEqual(['{"name":7}'])
+})
+
+test('a committed write whose output misses its schema still reports what was saved', async () => {
+  const saved = bindTool(
+    {
+      name: 'createProbe',
+      description: 'Saves a probe',
+      guide: { does: 'Guarda una prueba.' },
+      inputSchema: z.object({}),
+      outputSchema: z.object({ id: z.number(), name: z.string() }),
+      execute: async () => ({ id: 1 }),
+    },
+    (operation) => operation(),
+  )
+
+  await expect(toolsToBindings([saved]).createProbe.execute({})).resolves.toEqual({
+    id: 1,
+  })
 })
 
 test('a CRM binding refuses invalid input itself, not the library', async () => {

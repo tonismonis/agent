@@ -56,7 +56,7 @@ function toJson<TResult>(result: TResult) {
  * included) reaches the tool and comes back as a refusal. Output is validated
  * here instead; a mismatch is our bug.
  */
-function bindTool<
+export function bindTool<
   TSchema extends z.ZodType,
   TOutput extends z.ZodType,
   TResult,
@@ -68,18 +68,22 @@ function bindTool<
     inputSchema: convertSchemaToJsonSchema(tool.inputSchema),
     outputSchema: convertSchemaToJsonSchema(tool.outputSchema),
   }).server(async (input) => {
+    let result: TResult
     try {
       // SAFETY: execute parses its raw input itself and refuses anything else.
-      const result = await run(() => tool.execute(input as z.input<TSchema>))
-      const output = tool.outputSchema.safeParse(toJson(result))
-      if (output.success) return output.data
-      console.error('tool output does not match its schema', tool.name, output.error)
-      throw refuse.internal(write)
+      result = await run(() => tool.execute(input as z.input<TSchema>))
     } catch (error) {
       if (error instanceof RefusalError) throw error
       console.error('tool failed outside its transaction', tool.name, error)
       throw refuse.internal(write)
     }
+    const json = toJson(result)
+    const output = tool.outputSchema.safeParse(json)
+    if (output.success) return output.data
+    // The write already committed: refusing now would tell the Owner it was
+    // not saved, and a retry would save it twice.
+    console.error('tool output does not match its schema', tool.name, output.error)
+    return json
   })
 }
 
