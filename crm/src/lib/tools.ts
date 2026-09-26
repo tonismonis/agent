@@ -7,7 +7,6 @@ import {
   ilike,
   isNull,
   lt,
-  lte,
   ne,
   sql,
 } from 'drizzle-orm'
@@ -23,6 +22,14 @@ import {
   payments,
   services,
 } from '#/db/schema'
+import {
+  describeSantiagoSpan,
+  describeSantiagoTime,
+  rangeInput,
+  timeInput,
+  toInstant,
+  toRange,
+} from '#/lib/santiago-time'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 
 type AuditEntity =
@@ -311,8 +318,8 @@ const listAuditLogInput = z
   .object({
     entity: z.enum(['client', 'service', 'appointment', 'payment']).optional(),
     entity_id: z.number().optional(),
-    since: z.string().optional(),
-    until: z.string().optional(),
+    since: rangeInput.optional(),
+    until: rangeInput.optional(),
     ok: z.boolean().optional(),
     all: z.literal(true).optional(),
   })
@@ -335,8 +342,9 @@ export const listAuditLog = {
   outputSchema: z.array(auditRecord),
   execute: parsedExecute(
     listAuditLogInput,
-    async ({ entity, entity_id, since, until, ok }) =>
-      db
+    async ({ entity, entity_id, since, until, ok }) => {
+      const { start, end } = toRange(since, until)
+      return db
         .select()
         .from(audit_log)
         .where(
@@ -345,11 +353,12 @@ export const listAuditLog = {
             entity_id !== undefined
               ? eq(audit_log.entity_id, entity_id)
               : undefined,
-            since ? gte(audit_log.ts, new Date(since)) : undefined,
-            until ? lte(audit_log.ts, new Date(until)) : undefined,
+            start ? gte(audit_log.ts, start) : undefined,
+            end ? lt(audit_log.ts, end) : undefined,
             ok !== undefined ? eq(audit_log.ok, ok) : undefined,
           ),
-        ),
+        )
+    },
   ),
 }
 
@@ -664,37 +673,51 @@ export const restoreClient = {
 
 const findAppointmentsInput = z.object({
   client_id: z.number().optional(),
-  from: z.string().optional(),
-  to: z.string().optional(),
+  from: rangeInput.optional(),
+  to: rangeInput.optional(),
   status: z.enum(['scheduled', 'completed', 'cancelled', 'no_show']).optional(),
 })
 
 export const findAppointments = {
   name: 'findAppointments',
-  description: 'Find appointments by client, date range, and status',
+  description:
+    'Find appointments by client, time range and status. Returns every appointment that occupies any part of [from, to), earliest first. starts_local and ends_local are the times as the Owner reads them in America/Santiago; use them when talking to the Owner.',
   inputSchema: findAppointmentsInput,
-  outputSchema: z.array(appointmentRecord),
+  outputSchema: z.array(
+    appointmentRecord.extend({
+      starts_local: z.string().describe('e.g. jueves 1 de octubre, 17:00'),
+      ends_local: z.string(),
+    }),
+  ),
   execute: parsedExecute(
     findAppointmentsInput,
-    async ({ client_id, from, to, status }) =>
-      db
+    async ({ client_id, from, to, status }) => {
+      const { start, end } = toRange(from, to)
+      const rows = await db
         .select()
         .from(appointments)
         .where(
           and(
             isNull(appointments.deleted_at),
             client_id ? eq(appointments.client_id, client_id) : undefined,
-            from ? gte(appointments.starts_at, new Date(from)) : undefined,
-            to ? lte(appointments.starts_at, new Date(to)) : undefined,
+            start ? gt(appointments.ends_at, start) : undefined,
+            end ? lt(appointments.starts_at, end) : undefined,
             status ? eq(appointments.status, status) : undefined,
           ),
-        ),
+        )
+        .orderBy(appointments.starts_at)
+      return rows.map((row) => ({
+        ...row,
+        starts_local: describeSantiagoTime(row.starts_at),
+        ends_local: describeSantiagoTime(row.ends_at),
+      }))
+    },
   ),
 }
 
 const updateAppointmentInput = z.object({
   id: z.number(),
-  starts_at: z.string().optional(),
+  starts_at: timeInput.optional(),
   duration_minutes: z.number().int().positive().optional(),
   status: z.enum(['scheduled', 'completed', 'cancelled', 'no_show']).optional(),
   price: z.number().int().nonnegative().optional(),
@@ -723,7 +746,7 @@ export const updateAppointment = {
           .from(appointments)
           .where(eq(appointments.id, id))
         if (!existing) throw new Error(`Appointment ${id} not found`)
-        const newStarts = starts_at ? new Date(starts_at) : existing.starts_at
+        const newStarts = starts_at ? toInstant(starts_at) : existing.starts_at
         const duration =
           duration_minutes ??
           (existing.ends_at.getTime() - existing.starts_at.getTime()) / 60000
@@ -873,14 +896,14 @@ async function assertNoOverlap(
     .limit(1)
   if (conflict)
     throw new Error(
-      `Time conflict with ${conflict.client_name} (${conflict.starts_at.toISOString()} – ${conflict.ends_at.toISOString()})`,
+      `Time conflict with ${conflict.client_name} (${describeSantiagoSpan(conflict.starts_at, conflict.ends_at)})`,
     )
 }
 
 const createAppointmentInput = z.object({
   client_id: z.number(),
   service_id: z.number(),
-  starts_at: z.string(),
+  starts_at: timeInput,
   duration_minutes: z.number().int().positive().optional(),
   price: z.number().int().nonnegative().optional(),
   mode: z.enum(['online', 'in_person']),
@@ -907,7 +930,7 @@ export const createAppointment = {
       const duration = input.duration_minutes ?? service.duration_minutes
       if (duration == null)
         throw new Error('duration_minutes required: service has no default')
-      const starts_at = new Date(input.starts_at)
+      const starts_at = toInstant(input.starts_at)
       const ends_at = new Date(starts_at.getTime() + duration * 60000)
       const price =
         input.price ??
@@ -935,7 +958,7 @@ export const createAppointment = {
 const createPaymentInput = z.object({
   client_id: z.number(),
   amount: z.number().int().positive(),
-  paid_at: z.string().optional(),
+  paid_at: timeInput.optional(),
   appointment_id: z.number().optional(),
   notes: z.string().optional(),
 })
@@ -952,7 +975,7 @@ export const createPayment = {
     async ({ paid_at, ...rest }) => {
       const [payment] = await db
         .insert(payments)
-        .values({ ...rest, paid_at: paid_at ? new Date(paid_at) : new Date() })
+        .values({ ...rest, paid_at: paid_at ? toInstant(paid_at) : new Date() })
         .returning()
       return payment
     },
@@ -961,8 +984,8 @@ export const createPayment = {
 
 const findPaymentsInput = z.object({
   client_id: z.number().optional(),
-  from: z.string().optional(),
-  to: z.string().optional(),
+  from: rangeInput.optional(),
+  to: rangeInput.optional(),
 })
 
 export const findPayments = {
@@ -972,25 +995,27 @@ export const findPayments = {
   outputSchema: z.array(paymentRecord),
   execute: parsedExecute(
     findPaymentsInput,
-    async ({ client_id, from, to }) =>
-      db
+    async ({ client_id, from, to }) => {
+      const { start, end } = toRange(from, to)
+      return db
         .select()
         .from(payments)
         .where(
           and(
             isNull(payments.deleted_at),
             client_id ? eq(payments.client_id, client_id) : undefined,
-            from ? gte(payments.paid_at, new Date(from)) : undefined,
-            to ? lte(payments.paid_at, new Date(to)) : undefined,
+            start ? gte(payments.paid_at, start) : undefined,
+            end ? lt(payments.paid_at, end) : undefined,
           ),
-        ),
+        )
+    },
   ),
 }
 
 const updatePaymentInput = z.object({
   id: z.number(),
   amount: z.number().int().positive().optional(),
-  paid_at: z.string().optional(),
+  paid_at: timeInput.optional(),
   appointment_id: z.number().optional(),
   notes: z.string().optional(),
 })
@@ -1009,7 +1034,7 @@ export const updatePayment = {
         ...fields,
         updated_at: sql`now()`,
       }
-      if (paid_at) set.paid_at = new Date(paid_at)
+      if (paid_at) set.paid_at = toInstant(paid_at)
       const [payment] = await db
         .update(payments)
         .set(set)

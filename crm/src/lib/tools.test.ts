@@ -485,7 +485,7 @@ test('restoreAppointment rejects a rebooked slot with conflict details', async (
     mode: 'online',
   })
   await softDeleteAppointment.execute({ id: deleted.id })
-  const conflict = await createAppointment.execute({
+  await createAppointment.execute({
     client_id: pedro.id,
     service_id: service.id,
     starts_at: '2026-08-01T15:30:00.000Z',
@@ -493,7 +493,7 @@ test('restoreAppointment rejects a rebooked slot with conflict details', async (
   })
 
   await expect(restoreAppointment.execute({ id: deleted.id })).rejects.toThrow(
-    /Pedro.*2026-08-01T15:30:00.000Z.*2026-08-01T16:30:00.000Z/,
+    'Time conflict with Pedro (sábado 1 de agosto, 11:30–12:30)',
   )
 
   expect((await db.select().from(appointments)).find((a) => a.id === deleted.id))
@@ -504,7 +504,7 @@ test('restoreAppointment rejects a rebooked slot with conflict details', async (
       entity_id: deleted.id,
       before: expect.objectContaining({ id: deleted.id }),
       ok: false,
-      error: expect.stringContaining(conflict.starts_at.toISOString()),
+      error: expect.stringContaining('11:30–12:30'),
     }),
   )
 })
@@ -795,7 +795,7 @@ test('updateAppointment reschedule rejects overlap with another appointment', as
   expect(found.starts_at).toEqual(new Date('2026-08-01T15:00:00.000Z'))
 })
 
-test('findAppointments filters by client, starts_at range, and status; excludes soft-deleted', async () => {
+test('findAppointments filters by client, overlapping range, and status; excludes soft-deleted', async () => {
   const rosa = await createClient.execute({ name: 'Rosa' })
   const pedro = await createClient.execute({ name: 'Pedro' })
   const service = await createService.execute({
@@ -823,14 +823,34 @@ test('findAppointments filters by client, starts_at range, and status; excludes 
     mode: 'online',
   })
 
+  const straddling = await createAppointment.execute({
+    client_id: pedro.id,
+    service_id: service.id,
+    starts_at: '2026-08-02T23:30:00.000Z',
+    mode: 'online',
+  })
+
   expect(await findAppointments.execute({ client_id: rosa.id })).toHaveLength(2)
 
   const ranged = await findAppointments.execute({
     from: '2026-08-03T00:00:00.000Z',
     to: '2026-08-10T00:00:00.000Z',
   })
-  expect(ranged).toHaveLength(1)
-  expect(ranged[0].starts_at).toEqual(new Date('2026-08-05T15:00:00.000Z'))
+  expect(ranged.map((a) => a.starts_at)).toEqual([
+    straddling.starts_at,
+    new Date('2026-08-05T15:00:00.000Z'),
+  ])
+
+  const saturday = await findAppointments.execute({
+    from: '2026-08-01',
+    to: '2026-08-01',
+  })
+  expect(
+    saturday.map(({ starts_local, ends_local }) => [starts_local, ends_local]),
+  ).toEqual([
+    ['sábado 1 de agosto, 11:00', 'sábado 1 de agosto, 12:00'],
+    ['sábado 1 de agosto, 13:00', 'sábado 1 de agosto, 14:00'],
+  ])
 
   await db
     .update(appointments)
@@ -842,6 +862,33 @@ test('findAppointments filters by client, starts_at range, and status; excludes 
 
   await softDeleteAppointment.execute({ id: rosaAug1.id })
   expect(await findAppointments.execute({ status: 'completed' })).toHaveLength(0)
+})
+
+test('createAppointment reads an offsetless time as Santiago clock time', async () => {
+  const client = await createClient.execute({ name: 'Pedro' })
+  const service = await createService.execute({
+    name: 'Clase',
+    price: 35000,
+    unit: 'flat',
+    duration_minutes: 60,
+  })
+
+  const booked = await createAppointment.execute({
+    client_id: client.id,
+    service_id: service.id,
+    starts_at: '2026-10-01T17:00',
+    mode: 'in_person',
+  })
+
+  expect(booked.starts_at).toEqual(new Date('2026-10-01T20:00:00.000Z'))
+  await expect(
+    createAppointment.execute({
+      client_id: client.id,
+      service_id: service.id,
+      starts_at: '2026-09-06T00:30',
+      mode: 'in_person',
+    }),
+  ).rejects.toThrow(/does not exist in America\/Santiago/)
 })
 
 test('createPayment then findPayments sums a month window', async () => {

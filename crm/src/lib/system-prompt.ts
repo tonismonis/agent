@@ -108,7 +108,9 @@ Rules
 - Only scheduled appointments take up time. Cancelled, completed and no-show
   appointments do not.
 - Never ask the Owner for working hours and never offer to record them.
-- Pass timestamps as ISO 8601 with the America/Santiago offset.
+- Write times as the Owner's clock time in ISO 8601 without an offset, e.g.
+  2026-10-01T17:00; the CRM reads them in America/Santiago. In searches, a date
+  such as 2026-10-01 means that whole day.
 - When a booking fails because of an overlap, say which appointment it
   collides with and ask for another time.
 - Never store health information or personal context about a client in any

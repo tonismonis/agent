@@ -20,6 +20,8 @@ test('prompt injects Owner name, profession, Santiago now, and operating rules',
   expect(prompt).toContain('Never propose, suggest or choose a time')
   expect(prompt).toContain('Never pick the bounds yourself.')
   expect(prompt).toContain('Only scheduled appointments take up time.')
+  expect(prompt).toContain("Write times as the Owner's clock time in ISO 8601 without an offset")
+  expect(prompt).not.toContain('with the America/Santiago offset')
   expect(prompt).not.toMatch(/free_slots|weekly/i)
   expect(prompt).toContain('Never store health information or personal context')
   expect(prompt).toContain('payments.notes holds only the payment method or a reference')
