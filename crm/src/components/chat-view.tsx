@@ -370,7 +370,6 @@ function EmptyState({
   ownerName: string | undefined
   onPick: (prompt: string) => void
 }) {
-  // A greeting, not a form letter: "Tomás", not "Tomás Maqui Ríos".
   const firstName = ownerName?.trim().split(/\s+/)[0]
   return (
     <div className="mt-auto flex flex-col gap-7 pb-2">
@@ -380,7 +379,7 @@ function EmptyState({
           {firstName ? `, ${firstName}` : ''}.
         </h1>
         <p className="m-0 max-w-[520px] font-read text-[19px] font-light leading-[1.55] text-ink-dim">
-          Escríbeme como le contarías a una asistente: registro clientes, citas
+          Escríbeme como le contarías a un asistente: registro clientes, citas
           y pagos, y te respondo sobre tu agenda y tus cuentas.
         </p>
       </div>
