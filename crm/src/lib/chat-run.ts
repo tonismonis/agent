@@ -198,6 +198,7 @@ export const modelTurn: TurnDriver = ({
     systemPrompts: [
       buildAppPrompt({
         now,
+        ownerName: owner.name,
         profession: owner.profession,
         restrictedNotes: owner.restricted_notes,
       }),
