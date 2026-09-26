@@ -4,7 +4,7 @@ import { createServerFn } from '@tanstack/react-start'
 
 const requireSession = createServerFn({ method: 'GET' }).handler(async () => {
   const session = await auth()
-  if (!session.isAuthenticated) throw redirect({ to: '/sign-in' })
+  if (!session.isAuthenticated) throw redirect({ to: '/sign-in/$' })
 })
 
 export const Route = createFileRoute('/_authenticated')({
