@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm'
 import {
   boolean,
   bigint,
+  check,
   foreignKey,
   index,
   integer,
@@ -135,6 +136,8 @@ export const services = pgTable(
   },
   (table) => [
     unique('services_id_owner_id_unique').on(table.id, table.owner_id),
+    check('services_price_positive', sql`${table.price} > 0`),
+    check('services_duration_positive', sql`${table.duration_minutes} > 0`),
     ownerPolicy(),
   ],
 ).enableRLS()
@@ -197,6 +200,13 @@ export const appointments = pgTable(
   // Drizzle has no exclusion-constraint builder; migration adds appointments_no_overlap.
   (table) => [
     unique('appointments_id_owner_id_unique').on(table.id, table.owner_id),
+    unique('appointments_id_client_id_owner_id_unique').on(
+      table.id,
+      table.client_id,
+      table.owner_id,
+    ),
+    check('appointments_ends_after_start', sql`${table.ends_at} > ${table.starts_at}`),
+    check('appointments_price_nonnegative', sql`${table.price} >= 0`),
     foreignKey({
       name: 'appointments_client_owner_fk',
       columns: [table.client_id, table.owner_id],
@@ -240,6 +250,18 @@ export const payments = pgTable(
       columns: [table.appointment_id, table.owner_id],
       foreignColumns: [appointments.id, appointments.owner_id],
     }),
+    // A payment settles an appointment of the same client. MATCH SIMPLE skips
+    // it when appointment_id is null.
+    foreignKey({
+      name: 'payments_appointment_client_fk',
+      columns: [table.appointment_id, table.client_id, table.owner_id],
+      foreignColumns: [
+        appointments.id,
+        appointments.client_id,
+        appointments.owner_id,
+      ],
+    }),
+    check('payments_amount_positive', sql`${table.amount} > 0`),
     ownerPolicy(),
   ],
 ).enableRLS()

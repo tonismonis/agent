@@ -5,7 +5,14 @@ import { and, eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { beforeAll, beforeEach, expect, test } from 'vitest'
 
-import { appointments, audit_log, clients, owners, services } from '#/db/schema'
+import {
+  appointments,
+  audit_log,
+  clients,
+  owners,
+  payments,
+  services,
+} from '#/db/schema'
 import {
   createAppointment,
   createClient,
@@ -46,6 +53,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await adminDb.delete(audit_log).where(eq(audit_log.owner_id, ownerId))
+  await adminDb.delete(payments).where(eq(payments.owner_id, ownerId))
   await adminDb.delete(appointments).where(eq(appointments.owner_id, ownerId))
   await adminDb.delete(clients).where(eq(clients.owner_id, ownerId))
   await adminDb.delete(services).where(eq(services.owner_id, ownerId))
@@ -117,4 +125,45 @@ test('concurrent bookings of one slot leave exactly one appointment', async () =
     .from(appointments)
     .where(eq(appointments.owner_id, ownerId))
   expect(booked).toHaveLength(1)
+})
+
+test("a payment linked to another client's appointment is refused", async () => {
+  const rosa = await runOwnerTool(ownerId, () =>
+    createClient.execute({ name: 'Rosa' }),
+  )
+  const pedro = await runOwnerTool(ownerId, () =>
+    createClient.execute({ name: 'Pedro' }),
+  )
+  const service = await runOwnerTool(ownerId, () =>
+    createService.execute({
+      name: 'Sesión',
+      price: 40000,
+      unit: 'flat',
+      duration_minutes: 60,
+    }),
+  )
+  const rosaAppointment = await runOwnerTool(ownerId, () =>
+    createAppointment.execute({
+      client_id: rosa.id,
+      service_id: service.id,
+      starts_at: '2026-09-24T13:00:00Z',
+      mode: 'online',
+    }),
+  )
+
+  await expect(
+    runOwnerTool(ownerId, () =>
+      createPayment.execute({
+        client_id: pedro.id,
+        appointment_id: rosaAppointment.id,
+        amount: 40000,
+      }),
+    ),
+  ).rejects.toThrow(/payments_appointment_client_fk/)
+
+  const stored = await adminDb
+    .select()
+    .from(payments)
+    .where(eq(payments.owner_id, ownerId))
+  expect(stored).toEqual([])
 })

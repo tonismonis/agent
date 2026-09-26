@@ -78,6 +78,13 @@
       "when": 1790435241634,
       "tag": "0010_drop_working_hours",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790438314263,
+      "tag": "0011_db_invariants",
+      "breakpoints": true
     }
   ]
 }
