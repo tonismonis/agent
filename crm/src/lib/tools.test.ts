@@ -933,6 +933,18 @@ test('createPayment defaults paid_at to now', async () => {
   expect(payment.paid_at.getTime()).toBeGreaterThanOrEqual(before - 1000)
 })
 
+test('createPayment reads a bare paid_at date as the start of that Santiago day', async () => {
+  const rosa = await createClient.execute({ name: 'Rosa' })
+
+  const payment = await createPayment.execute({
+    client_id: rosa.id,
+    amount: 5000,
+    paid_at: '2026-09-29',
+  })
+
+  expect(payment.paid_at.toISOString()).toBe('2026-09-29T03:00:00.000Z')
+})
+
 test('softDeleteAppointment hides it from findAppointments', async () => {
   const rosa = await createClient.execute({ name: 'Rosa' })
   const service = await createService.execute({
