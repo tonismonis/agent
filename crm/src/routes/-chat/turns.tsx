@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 
+import { TextButton } from '#/components/ui/text-button'
 import { queuedText, type Turn } from '#/routes/-chat/select-turns'
 import { marginClass, WorkMargin, WorkToggle } from '#/routes/-chat/work-log'
 import { WriteSummaryView } from '#/routes/-chat/write-summary'
@@ -29,8 +30,9 @@ function describeChatError(error: Error) {
 }
 
 /**
- * One line of the conversation: the 816px column centered on the screen,
- * with the right margin free for notes, so showing work never moves the text.
+ * One line of the conversation: the column (--container-column) centered on
+ * the screen, with the right margin free for notes, so showing work never
+ * moves the text.
  */
 export function Row({
   children,
@@ -42,7 +44,7 @@ export function Row({
   className?: string
 }) {
   return (
-    <div className={`grid grid-cols-[1fr_min(816px,100%)_1fr] ${className}`}>
+    <div className={`grid grid-cols-[1fr_min(var(--container-column),100%)_1fr] ${className}`}>
       <div className="col-start-2 flex min-w-0 flex-col px-11">{children}</div>
       {margin && (
         <aside className={`col-start-3 min-w-0 max-w-[320px] pr-6 pt-2 ${marginClass}`}>
@@ -117,13 +119,9 @@ export function QueuedTurn({
         <div className="whitespace-pre-wrap text-ink-faint">
           {queuedText(queued)}
         </div>
-        <button
-          className="cursor-pointer font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
-          onClick={onCancel}
-          type="button"
-        >
+        <TextButton onClick={onCancel} tone="mute">
           en cola · cancelar
-        </button>
+        </TextButton>
       </div>
     </Row>
   )

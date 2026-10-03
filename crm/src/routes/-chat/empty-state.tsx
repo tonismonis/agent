@@ -48,7 +48,7 @@ export function EmptyState({
         </p>
       </div>
       <div className="flex flex-col font-meta">
-        <div className="pb-3 text-[9.5px] uppercase tracking-[0.18em] text-ink-mute">
+        <div className="font-meta text-meta uppercase pb-3 text-ink-mute">
           Por ejemplo
         </div>
         {examplePrompts.map((prompt) => (
@@ -59,7 +59,7 @@ export function EmptyState({
             type="button"
           >
             <span>{prompt}</span>
-            <span className="shrink-0 font-meta text-[10px] not-italic uppercase tracking-[0.14em] text-ink-faint group-hover:text-ink-mute">
+            <span className="font-meta text-meta uppercase shrink-0 not-italic text-ink-faint group-hover:text-ink-mute">
               usar
             </span>
           </button>

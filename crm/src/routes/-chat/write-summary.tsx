@@ -27,7 +27,7 @@ function WriteReceipt({
 }) {
   return (
     <div className="flex max-w-[86%] flex-col gap-[9px] border-l-2 border-ink py-[2px] pl-4 font-meta text-[11.5px] leading-[1.5]">
-      <div className="text-[9.5px] uppercase tracking-[0.18em] text-ink-mute">
+      <div className="font-meta text-meta uppercase text-ink-mute">
         Guardado
       </div>
       {receipt.lines.map((line) => (
@@ -50,7 +50,7 @@ function RecordCard({
 }) {
   return (
     <div className="flex max-w-[86%] flex-col gap-3 border border-rule-strong px-[18px] py-4">
-      <div className="flex items-baseline justify-between gap-5 font-meta text-[9.5px] uppercase tracking-[0.18em] text-ink-mute">
+      <div className="font-meta text-meta uppercase flex items-baseline justify-between gap-5 text-ink-mute">
         <span>{card.subject}</span>
         <span className="shrink-0 text-right">
           {card.count === 1

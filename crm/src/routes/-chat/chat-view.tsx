@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { PaperPicker } from '#/components/paper-picker'
+import { TextButton } from '#/components/ui/text-button'
 import type { WorkCall } from '#/lib/write-receipts'
 import { Composer } from '#/routes/-chat/composer'
 import { EmptyState } from '#/routes/-chat/empty-state'
@@ -136,19 +137,15 @@ export function ChatView({
 
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-ground text-ink">
-      <header className="flex items-baseline justify-between border-b border-rule px-11 pb-[18px] pt-6 font-meta text-[10px] uppercase tracking-[0.16em] text-ink-mute">
+      <header className="font-meta text-meta uppercase flex items-baseline justify-between border-b border-rule px-11 pb-[18px] pt-6 text-ink-mute">
         <span className="flex gap-6">
           <span>{dateLabel}</span>
           {connectionLabel && <span>{connectionLabel}</span>}
         </span>
         <span className="flex gap-6">
-          <button
-            className="cursor-pointer uppercase tracking-[0.16em] hover:text-ink"
-            onClick={toggleWork}
-            type="button"
-          >
+          <TextButton onClick={toggleWork} tone="mute">
             {showWork ? 'ocultar trabajo' : 'ver trabajo'}
-          </button>
+          </TextButton>
         </span>
       </header>
 
