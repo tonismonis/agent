@@ -2,7 +2,7 @@
  * Canned chat states for designing against. Each state is exactly the props
  * the app route would hand ChatView at that moment, minus the handlers.
  */
-import type { ChatViewProps } from '#/components/chat-view'
+import type { ChatViewProps } from '#/routes/-chat/chat-view'
 import type { JsonValue } from '#/lib/json'
 import type { WorkCall } from '#/lib/write-receipts'
 import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
