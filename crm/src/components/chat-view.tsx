@@ -1,22 +1,15 @@
-import { parsePartialJSON } from '@tanstack/ai'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { PaperPicker } from '#/components/paper-picker'
 import { formatJson, isJsonObject, isJsonString, type JsonValue } from '#/lib/json'
-import {
-  inferWriteCallsFromCode,
-  summarizeWrites,
-  type WorkCall,
-  type WriteSummary,
-} from '#/lib/write-receipts'
+import type { WorkCall, WriteSummary } from '#/lib/write-receipts'
+import { queuedText, selectTurns } from '#/routes/-chat/select-turns'
 import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
 
 /**
  * The chat screen with no transport: everything it shows arrives as props, so
  * the app route feeds it from useChat and the design preview from fixtures.
  */
-
-type ToolCallPart = Extract<UIMessage['parts'][number], { type: 'tool-call' }>
 
 export const workStorageKey = 'chat-work'
 
@@ -63,21 +56,6 @@ function truncate(text: string, limit: number) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
-/** The code a call ran: its parsed input once complete, partial JSON while streaming. */
-function getTypeScript(part: ToolCallPart) {
-  // SAFETY: a tool input is the JSON the model called the tool with.
-  const input = (part.input ?? parsePartialJSON(part.arguments)) as JsonValue
-  const code = isJsonObject(input) ? input.typescriptCode : undefined
-  return isJsonString(code) ? code : part.arguments
-}
-
-/** execute_typescript reported failure, so the code's writes are unknown. */
-function executionFailed(part: ToolCallPart) {
-  // SAFETY: the tool's output is the JSON its server handler returned.
-  const output = part.output as JsonValue | undefined
-  return isJsonObject(output) && output.success === false
-}
-
 /** `client_id=8 · limit=10` — the call's inputs on one line. */
 function formatArgs(args: JsonValue | undefined) {
   if (args === undefined || args === null) return ''
@@ -94,59 +72,6 @@ function formatArgs(args: JsonValue | undefined) {
       })
       .join(' · '),
     140,
-  )
-}
-
-export function queuedText(queued: QueuedMessage) {
-  // SAFETY: this page only ever sends plain text.
-  return queued.content as string
-}
-
-function textOf(message: UIMessage) {
-  return message.parts
-    .filter((part) => part.type === 'text')
-    .map((part) => part.content)
-    .join('')
-}
-
-function thinkingOf(message: UIMessage) {
-  return message.parts
-    .filter((part) => part.type === 'thinking')
-    .map((part) => part.content)
-    .join('')
-}
-
-function toolCallPartsOf(message: UIMessage) {
-  return message.parts.filter(
-    (part): part is ToolCallPart => part.type === 'tool-call',
-  )
-}
-
-/**
- * The calls one turn made. Live calls arrive as code-mode events; a turn
- * replayed from persistence has none, so the code it ran is read back instead.
- */
-function callsForMessage(
-  message: UIMessage,
-  callsByToolCall: Map<string, Array<WorkCall>>,
-): Array<WorkCall> {
-  return toolCallPartsOf(message).flatMap((part) => {
-    const live = callsByToolCall.get(part.id)
-    if (live && live.length > 0) return live
-    // Each tool call commits on its own, so a failed run may have written some
-    // of its calls; with no per-call record left, claim none rather than all.
-    if (executionFailed(part)) return []
-    return inferWriteCallsFromCode(getTypeScript(part), part.id)
-  })
-}
-
-/** The live calls one turn made, as code-mode events reported them. */
-function liveCallsOf(
-  message: UIMessage,
-  callsByToolCall: Map<string, Array<WorkCall>>,
-) {
-  return toolCallPartsOf(message).flatMap(
-    (part) => callsByToolCall.get(part.id) ?? [],
   )
 }
 
@@ -489,11 +414,12 @@ export function ChatView({
     inputField.current?.focus()
   }
 
-  const lastAssistantId = messages.findLast(
-    (message) => message.role === 'assistant',
-  )?.id
-  const streamingOnLastAssistant =
-    isLoading && messages.at(-1)?.role === 'assistant'
+  const { turns, waiting } = selectTurns(
+    messages,
+    callsByToolCall,
+    isLoading,
+    showWork,
+  )
 
   const dateLabel = new Intl.DateTimeFormat('es-CL', {
     timeZone: 'America/Santiago',
@@ -534,89 +460,70 @@ export function ChatView({
           </Row>
         )}
 
-        {messages.map((message) => {
-          const text = textOf(message)
-          const thinking = thinkingOf(message)
-          const summary =
-            message.role === 'assistant'
-              ? summarizeWrites(callsForMessage(message, callsByToolCall))
-              : ({ kind: 'none' } satisfies WriteSummary)
-          const showCaret =
-            streamingOnLastAssistant && message.id === lastAssistantId
-          const showThinking = Boolean(thinking) && (showCaret || !text)
-          const calls = showWork ? liveCallsOf(message, callsByToolCall) : []
-
-          if (
-            !text &&
-            summary.kind === 'none' &&
-            !showCaret &&
-            !showThinking &&
-            calls.length === 0
-          )
-            return null
-
-          if (message.role === 'user') {
-            return (
-              <Row key={message.id}>
-                <div className="max-w-[74%] self-end whitespace-pre-wrap text-right text-ink-dim">
-                  {text}
-                </div>
-              </Row>
-            )
-          }
-
-          const workOpen = openWork.has(message.id)
-
-          return (
-            <Row
-              key={message.id}
-              margin={
-                calls.length > 0 && (
-                  <div className="flex flex-col gap-3">
-                    <div className="font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint">
-                      {describeWork(calls)}
-                    </div>
-                    <WorkCalls calls={calls} />
+        {turns.map((turn) => {
+          switch (turn.kind) {
+            case 'user':
+              return (
+                <Row key={turn.id}>
+                  <div className="max-w-[74%] self-end whitespace-pre-wrap text-right text-ink-dim">
+                    {turn.text}
                   </div>
-                )
-              }
-            >
-              <div className="flex flex-col gap-[18px]">
-                {showThinking && (
-                  <div className="max-w-[86%] whitespace-pre-wrap font-read text-ink-faint">
-                    {thinking}
-                  </div>
-                )}
-                {(text || showCaret) && (
-                  <div className="max-w-[86%] whitespace-pre-wrap">
-                    {text}
-                    {showCaret && <Caret />}
-                  </div>
-                )}
-                <WriteSummaryView summary={summary} />
-                {calls.length > 0 && (
-                  <div className={`flex max-w-[86%] flex-col gap-3 ${inlineClass}`}>
-                    <button
-                      aria-expanded={workOpen}
-                      className="cursor-pointer self-start font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint hover:text-ink"
-                      onClick={() => toggleTurnWork(message.id)}
-                      type="button"
-                    >
-                      {describeWork(calls)} · {workOpen ? 'ocultar' : 'ver'}
-                    </button>
-                    {workOpen && (
-                      <div className="border-l border-rule pl-[14px]">
-                        <WorkCalls calls={calls} />
+                </Row>
+              )
+            case 'assistant': {
+              const workOpen = openWork.has(turn.id)
+              return (
+                <Row
+                  key={turn.id}
+                  margin={
+                    turn.work.length > 0 && (
+                      <div className="flex flex-col gap-3">
+                        <div className="font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint">
+                          {describeWork(turn.work)}
+                        </div>
+                        <WorkCalls calls={turn.work} />
+                      </div>
+                    )
+                  }
+                >
+                  <div className="flex flex-col gap-[18px]">
+                    {turn.thinking !== null && (
+                      <div className="max-w-[86%] whitespace-pre-wrap font-read text-ink-faint">
+                        {turn.thinking}
+                      </div>
+                    )}
+                    {(turn.text || turn.streaming) && (
+                      <div className="max-w-[86%] whitespace-pre-wrap">
+                        {turn.text}
+                        {turn.streaming && <Caret />}
+                      </div>
+                    )}
+                    <WriteSummaryView summary={turn.summary} />
+                    {turn.work.length > 0 && (
+                      <div className={`flex max-w-[86%] flex-col gap-3 ${inlineClass}`}>
+                        <button
+                          aria-expanded={workOpen}
+                          className="cursor-pointer self-start font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint hover:text-ink"
+                          onClick={() => toggleTurnWork(turn.id)}
+                          type="button"
+                        >
+                          {describeWork(turn.work)} · {workOpen ? 'ocultar' : 'ver'}
+                        </button>
+                        {workOpen && (
+                          <div className="border-l border-rule pl-[14px]">
+                            <WorkCalls calls={turn.work} />
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
-            </Row>
-          )
+                </Row>
+              )
+            }
+          }
         })}
 
-        {isLoading && !streamingOnLastAssistant && (
+        {waiting && (
           <Row>
             <div className="max-w-[86%]">
               <Caret />
