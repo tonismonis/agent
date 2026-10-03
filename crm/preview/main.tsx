@@ -7,8 +7,8 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import { ChatView } from '#/components/chat-view'
-import { paperStorageKey, papers, pickPaper, readPaperChoice, showPaper } from '#/lib/paper'
+import { ChatView, workStorageKey } from '#/components/chat-view'
+import { papers, pickPaper, readStoredPaperChoice, showPaper } from '#/lib/paper'
 import { states, type ChatState, type StateName } from './fixtures'
 
 import './styles.css'
@@ -26,20 +26,13 @@ function store(key: string, value: string) {
     /* storage blocked: the view keeps its defaults */
   }
 }
-function stored(key: string) {
-  try {
-    return window.localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
 
 // The app's root script shows the stored paper before paint; this page has
 // none, so it does the same here, before render.
-const choice = readPaperChoice(stored(paperStorageKey))
+const choice = readStoredPaperChoice()
 const paper = papers.find((entry) => entry.id === paperId)
 showPaper(paper ? pickPaper(choice, paper) : choice)
-if (work === 'on' || work === 'off') store('chat-work', work)
+if (work === 'on' || work === 'off') store(workStorageKey, work)
 
 function isStateName(name: string | null): name is StateName {
   return name !== null && Object.hasOwn(states, name)

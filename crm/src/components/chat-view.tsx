@@ -1,17 +1,8 @@
 import { parsePartialJSON } from '@tanstack/ai'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
+import { PaperPicker } from '#/components/paper-picker'
 import { formatJson, isJsonObject, isJsonString, type JsonValue } from '#/lib/json'
-import {
-  defaultPaperChoice,
-  paperStorageKey,
-  papers,
-  pickPaper,
-  readPaperChoice,
-  showPaper,
-  type Paper,
-  type PaperChoice,
-} from '#/lib/paper'
 import {
   inferWriteCallsFromCode,
   summarizeWrites,
@@ -27,7 +18,7 @@ import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
 
 type ToolCallPart = Extract<UIMessage['parts'][number], { type: 'tool-call' }>
 
-const workStorageKey = 'chat-work'
+export const workStorageKey = 'chat-work'
 
 /** What the server says when a run ends early, as the Owner reads it. */
 const runEndings = new Map([
@@ -408,65 +399,6 @@ function EmptyState({
   )
 }
 
-const paperModes = [
-  { mode: 'light', label: 'Papel claro' },
-  { mode: 'dark', label: 'Papel oscuro' },
-] as const
-
-/**
- * Bottom left, in the margin the conversation leaves free; only where that
- * margin is wide enough to hold it ((1200 − 816) / 2 = 192px).
- */
-function PaperPicker({
-  choice,
-  onPick,
-}: {
-  choice: PaperChoice
-  onPick: (paper: Paper) => void
-}) {
-  return (
-    <div className="fixed bottom-[30px] left-11 hidden flex-col gap-4 font-meta text-[10px] uppercase tracking-[0.16em] text-ink-mute min-[1200px]:flex">
-      {paperModes.map(({ mode, label }) => (
-        <div
-          aria-label={label}
-          className="flex flex-col gap-2"
-          key={mode}
-          role="group"
-        >
-          <span>{label}</span>
-          {papers
-            .filter((paper) => paper.mode === mode)
-            .map((paper) => {
-              const picked = choice[mode] === paper.id
-              const shown = picked && choice.mode === mode
-              return (
-                <button
-                  aria-pressed={picked}
-                  className={`flex cursor-pointer items-center gap-3 uppercase tracking-[0.16em] hover:text-ink ${picked ? 'text-ink' : ''}`}
-                  key={paper.id}
-                  onClick={() => onPick(paper)}
-                  type="button"
-                >
-                  <span
-                    className={`border p-px ${shown ? 'border-ink' : 'border-rule-strong'}`}
-                  >
-                    {/* --paper-ground, not bg-ground: --color-ground resolves
-                        once on <html> and arrives here already computed. */}
-                    <span
-                      className="block h-3.5 w-3.5 bg-(--paper-ground)"
-                      data-paper={paper.id}
-                    />
-                  </span>
-                  {paper.name}
-                </button>
-              )
-            })}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /** Within this many pixels of the bottom counts as following the conversation. */
 const pinnedSlackPx = 40
 
@@ -509,7 +441,6 @@ export function ChatView({
   onCancelQueued,
   ownerName,
 }: ChatViewProps) {
-  const [paper, setPaper] = useState<PaperChoice>(defaultPaperChoice)
   const [showWork, setShowWork] = useState(import.meta.env.DEV)
   // Turns whose calls are unfolded under the reply, on screens without a margin.
   const [openWork, setOpenWork] = useState<ReadonlySet<string>>(new Set())
@@ -518,10 +449,7 @@ export function ChatView({
   // Starts pinned, so the first paint of a stored transcript lands on its end.
   const messagesPinned = useRef(true)
 
-  // The document already carries the stored paper (an inline script in the root
-  // applies it before paint); this only catches the controls' labels up.
   useEffect(() => {
-    setPaper(readPaperChoice(readStored(paperStorageKey)))
     const storedWork = readStored(workStorageKey)
     if (storedWork === 'on' || storedWork === 'off')
       setShowWork(storedWork === 'on')
@@ -532,12 +460,6 @@ export function ChatView({
   useEffect(() => {
     if (messagesPinned.current) messageEnd.current?.scrollIntoView({ block: 'end' })
   }, [messages, callsByToolCall, queue.length, error, isLoading])
-
-  function choosePaper(picked: Paper) {
-    const next = pickPaper(paper, picked)
-    setPaper(next)
-    showPaper(next)
-  }
 
   function toggleWork() {
     const next = !showWork
@@ -730,7 +652,7 @@ export function ChatView({
         <div className="h-[6px] shrink-0" ref={messageEnd} />
       </div>
 
-      <PaperPicker choice={paper} onPick={choosePaper} />
+      <PaperPicker />
 
       <form
         className="mx-auto w-full max-w-[816px] px-11 pb-[30px] pt-[22px]"
