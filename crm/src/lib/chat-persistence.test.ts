@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import { beforeAll, beforeEach, expect, test } from 'vitest'
 
 import { messages, owners, runs } from '#/db/schema'
-import { createOwnerChatPersistence } from './chat-persistence'
+import { createOwnerChatPersistence } from './chat-persistence.server'
 
 const ownerA = '11111111-1111-4111-8111-111111111111'
 const ownerB = '22222222-2222-4222-8222-222222222222'

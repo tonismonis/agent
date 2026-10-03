@@ -1,9 +1,9 @@
 import { modelMessagesToUIMessages } from '@tanstack/ai'
 import { createServerFn } from '@tanstack/react-start'
 
-import { createOwnerChatPersistence } from './chat-persistence'
+import { createOwnerChatPersistence } from './chat-persistence.server'
 import { getDailyThreadId } from './chat-thread'
-import { requireVerifiedOwner } from './owner-context'
+import { requireVerifiedOwner } from './owner-context.server'
 
 import type { ModelMessage } from '@tanstack/ai'
 

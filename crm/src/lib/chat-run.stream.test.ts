@@ -6,13 +6,13 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import { afterEach, beforeAll, beforeEach, expect, test } from 'vitest'
 
 import { messages, owners, runs } from '#/db/schema'
-import { createOwnerChatPersistence } from './chat-persistence'
+import { createOwnerChatPersistence } from './chat-persistence.server'
 import {
   cancelChatRun,
   replayOrHydrateChat,
   runLogId,
   streamChatTurn,
-} from './chat-run'
+} from './chat-run.server'
 import { getDailyThreadId } from './chat-thread'
 
 import type {
@@ -20,7 +20,7 @@ import type {
   StreamChunk,
   TokenUsage,
 } from '@tanstack/ai'
-import type { Turn } from './chat-run'
+import type { Turn } from './chat-run.server'
 
 const ownerId = '88888888-8888-4888-8888-888888888888'
 const otherOwnerId = '99999999-9999-4999-8999-999999999999'

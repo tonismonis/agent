@@ -4,14 +4,14 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import { beforeAll, beforeEach, expect, test } from 'vitest'
 
 import { messages, owners, runs } from '#/db/schema'
-import { createOwnerChatPersistence } from './chat-persistence'
+import { createOwnerChatPersistence } from './chat-persistence.server'
 import {
   handleChatRequest,
   isValidClientThreadId,
   parseChatParams,
   replayOrHydrateChat,
   runLogId,
-} from './chat-run'
+} from './chat-run.server'
 import { getDailyThreadId } from './chat-thread'
 
 import type { StreamChunk } from '@tanstack/ai'

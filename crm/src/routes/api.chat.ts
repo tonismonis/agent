@@ -6,9 +6,9 @@ import {
   parseChatParams,
   replayOrHydrateChat,
   streamChatTurn,
-} from '#/lib/chat-run'
-import { enforceOwnerInferenceCap } from '#/lib/inference-usage'
-import { requireVerifiedOwner } from '#/lib/owner-context'
+} from '#/lib/chat-run.server'
+import { enforceOwnerInferenceCap } from '#/lib/inference-usage.server'
+import { requireVerifiedOwner } from '#/lib/owner-context.server'
 
 export const Route = createFileRoute('/api/chat')({
   server: {

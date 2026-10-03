@@ -1,7 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 
-import { requireVerifiedOwner } from './owner-context'
-import { getOwnerInferenceUsage } from './inference-usage'
+import { requireVerifiedOwner } from './owner-context.server'
+import { getOwnerInferenceUsage } from './inference-usage.server'
 
 export const getMyInferenceUsage = createServerFn({ method: 'GET' }).handler(
   async () => {

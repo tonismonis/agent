@@ -31,7 +31,7 @@ import {
   updatePayment,
   updateService,
   type CrmTool,
-} from '#/lib/tools'
+} from '#/lib/tools.server'
 import { isWriteTool } from '#/lib/write-receipts'
 
 import type { z } from 'zod'
