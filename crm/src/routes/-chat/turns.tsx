@@ -47,7 +47,7 @@ export function Row({
     <div className={`grid grid-cols-[1fr_min(var(--container-column),100%)_1fr] ${className}`}>
       <div className="col-start-2 flex min-w-0 flex-col px-11">{children}</div>
       {margin && (
-        <aside className={`col-start-3 min-w-0 max-w-[320px] pr-6 pt-2 ${marginClass}`}>
+        <aside className={`col-start-3 min-w-0 max-w-xs pr-6 pt-2 ${marginClass}`}>
           {margin}
         </aside>
       )}
@@ -57,7 +57,7 @@ export function Row({
 
 export function Caret() {
   return (
-    <span className="ml-[3px] inline-block h-[17px] w-[9px] translate-y-[2px] bg-ink" />
+    <span className="ml-[3px] inline-block h-[17px] w-[9px] translate-y-0.5 bg-ink" />
   )
 }
 
@@ -81,7 +81,7 @@ export function AssistantTurn({
 
   return (
     <Row margin={turn.work.length > 0 && <WorkMargin calls={turn.work} />}>
-      <div className="flex flex-col gap-[18px]">
+      <div className="flex flex-col gap-4.5">
         {turn.thinking !== null && (
           <div className="max-w-[86%] whitespace-pre-wrap font-read text-ink-faint">
             {turn.thinking}
@@ -130,7 +130,7 @@ export function QueuedTurn({
 export function ErrorTurn({ error }: { error: Error }) {
   return (
     <Row>
-      <div className="max-w-[86%] border-t border-rule-strong pt-[18px] text-ink">
+      <div className="max-w-[86%] border-t border-rule-strong pt-4.5 text-ink">
         {describeChatError(error)}
       </div>
     </Row>

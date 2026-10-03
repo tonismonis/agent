@@ -36,7 +36,7 @@ export function PaperPicker() {
   }
 
   return (
-    <div className="font-meta text-meta uppercase fixed bottom-[30px] left-11 hidden flex-col gap-4 text-ink-mute picker:flex">
+    <div className="font-meta text-meta uppercase fixed bottom-7.5 left-11 hidden flex-col gap-4 text-ink-mute picker:flex">
       {paperModes.map(({ mode, label }) => (
         <div
           aria-label={label}

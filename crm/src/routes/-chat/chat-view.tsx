@@ -137,7 +137,7 @@ export function ChatView({
 
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-ground text-ink">
-      <header className="font-meta text-meta uppercase flex items-baseline justify-between border-b border-rule px-11 pb-[18px] pt-6 text-ink-mute">
+      <header className="font-meta text-meta uppercase flex items-baseline justify-between border-b border-rule px-11 pb-4.5 pt-6 text-ink-mute">
         <span className="flex gap-6">
           <span>{dateLabel}</span>
           {connectionLabel && <span>{connectionLabel}</span>}
@@ -150,7 +150,7 @@ export function ChatView({
       </header>
 
       <div
-        className="flex min-h-0 flex-1 flex-col gap-[26px] overflow-y-auto pt-[30px] font-read text-[19px] font-light leading-[1.6]"
+        className="flex min-h-0 flex-1 flex-col gap-6.5 overflow-y-auto pt-7.5 font-read text-[19px] font-light leading-[1.6]"
         onScroll={(event) => {
           messagesPinned.current = isPinned(event.currentTarget)
         }}
@@ -188,7 +188,7 @@ export function ChatView({
 
         {error && <ErrorTurn error={error} />}
 
-        <div className="h-[6px] shrink-0" ref={messageEnd} />
+        <div className="h-1.5 shrink-0" ref={messageEnd} />
       </div>
 
       <PaperPicker />

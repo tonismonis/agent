@@ -150,7 +150,7 @@ export function WorkToggle({
         {describeWork(calls)} · {open ? 'ocultar' : 'ver'}
       </TextButton>
       {open && (
-        <div className="border-l border-rule pl-[14px]">
+        <div className="border-l border-rule pl-3.5">
           <WorkCalls calls={calls} />
         </div>
       )}

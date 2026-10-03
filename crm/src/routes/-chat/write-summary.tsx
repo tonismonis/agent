@@ -26,7 +26,7 @@ function WriteReceipt({
   receipt: Extract<WriteSummary, { kind: 'receipt' }>
 }) {
   return (
-    <div className="flex max-w-[86%] flex-col gap-[9px] border-l-2 border-ink py-[2px] pl-4 font-meta text-[11.5px] leading-[1.5]">
+    <div className="flex max-w-[86%] flex-col gap-[9px] border-l-2 border-ink py-0.5 pl-4 font-meta text-[11.5px] leading-[1.5]">
       <div className="font-meta text-meta uppercase text-ink-mute">
         Guardado
       </div>
@@ -49,7 +49,7 @@ function RecordCard({
   card: Extract<WriteSummary, { kind: 'card' }>
 }) {
   return (
-    <div className="flex max-w-[86%] flex-col gap-3 border border-rule-strong px-[18px] py-4">
+    <div className="flex max-w-[86%] flex-col gap-3 border border-rule-strong px-4.5 py-4">
       <div className="font-meta text-meta uppercase flex items-baseline justify-between gap-5 text-ink-mute">
         <span>{card.subject}</span>
         <span className="shrink-0 text-right">
@@ -58,7 +58,7 @@ function RecordCard({
             : `${card.count} registros guardados`}
         </span>
       </div>
-      <div className="flex flex-col gap-[2px] font-meta text-[12px] leading-[1.7] text-ink-2">
+      <div className="flex flex-col gap-0.5 font-meta text-xs leading-[1.7] text-ink-2">
         {card.rows.map((row) => (
           <FieldRow
             key={row.label}

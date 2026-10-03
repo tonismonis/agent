@@ -19,13 +19,13 @@ export function Composer({
 }) {
   return (
     <form
-      className="mx-auto w-full max-w-column px-11 pb-[30px] pt-[22px]"
+      className="mx-auto w-full max-w-column px-11 pb-7.5 pt-5.5"
       onSubmit={(event) => {
         event.preventDefault()
         onSubmit()
       }}
     >
-      <div className="flex items-center gap-5 border border-rule-strong px-[18px] py-[15px]">
+      <div className="flex items-center gap-5 border border-rule-strong px-4.5 py-[15px]">
         <textarea
           ref={ref}
           aria-label="Mensaje"
