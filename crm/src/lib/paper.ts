@@ -64,6 +64,14 @@ export function readPaperChoice(stored: string | null): PaperChoice {
   }
 }
 
+export function readStoredPaperChoice() {
+  try {
+    return readPaperChoice(window.localStorage.getItem(paperStorageKey))
+  } catch {
+    return defaultPaperChoice
+  }
+}
+
 /** Picking a paper also shows it, so it brings its mode along. */
 export function pickPaper(choice: PaperChoice, paper: Paper): PaperChoice {
   return paper.mode === 'light'
