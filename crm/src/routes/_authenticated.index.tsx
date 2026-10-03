@@ -2,12 +2,13 @@ import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { ChatView, queuedText } from '#/components/chat-view'
+import { ChatView } from '#/components/chat-view'
 import { loadChatPage, readTranscript } from '#/lib/chat-page.functions'
 import { getDailyThreadId, millisecondsUntilThreadRotation } from '#/lib/chat-thread'
 import { readCodeModeEvent } from '#/lib/code-mode-events'
 import type { JsonValue } from '#/lib/json'
 import type { WorkCall } from '#/lib/write-receipts'
+import { queuedText } from '#/routes/-chat/select-turns'
 import type { UseChatOptions } from '@tanstack/ai-react'
 
 export const Route = createFileRoute('/_authenticated/')({
