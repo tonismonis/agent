@@ -19,7 +19,7 @@ Operator decision, 2026-09-26.
 - **Principle.** A rule that a retry, a race or a tool bug could break is declared in the schema. Tool code checks first only so it can explain the refusal in Spanish. There are no triggers, and the exclusion constraint `appointments_no_overlap` is still the only hand-written SQL constraint.
 - **Checks.** Service prices are positive, and so are durations when set. An appointment ends after it starts and its price is not negative. Payment amounts are positive. Zod stops these values first, so a violation means a bug and refuses as `internal`.
 - **Payments settle their own client's appointment.** A payment references `appointments(id, client_id, owner_id)`, so linking another client's appointment fails in Postgres (`payments_appointment_client_fk`).
-- **One map.** `refusalByConstraint` in `crm/src/lib/tools.ts` turns constraint names into refusals. A clash constraint is re-read and reported with real dates. A foreign key names the missing record. Anything unlisted is `internal`.
+- **One map.** `refusalByConstraint` in `crm/src/lib/tools.server.ts` turns constraint names into refusals. A clash constraint is re-read and reported with real dates. A foreign key names the missing record. Anything unlisted is `internal`.
 
 ## Series
 
