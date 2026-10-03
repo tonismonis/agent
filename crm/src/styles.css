@@ -15,6 +15,10 @@
   --font-read: "Newsreader", Georgia, serif;
   --font-meta: "IBM Plex Mono", ui-monospace, monospace;
 
+  /* The small caps every chat label and text button is set in. */
+  --text-meta: 0.625rem;
+  --text-meta--letter-spacing: 0.16em;
+
   --color-ground: var(--paper-ground);
   --color-ink: var(--paper-ink);
   --color-ink-2: var(--paper-ink-2);
@@ -24,6 +28,13 @@
   --color-ink-ghost: var(--paper-ink-ghost);
   --color-rule: var(--paper-rule);
   --color-rule-strong: var(--paper-rule-strong);
+
+  /* The conversation column, and the widths whose side margins fit the work
+     log ((1376 − 816) / 2 = 280px) and the paper picker ((1200 − 816) / 2 =
+     192px). */
+  --container-column: 816px;
+  --breakpoint-margin: 86rem;
+  --breakpoint-picker: 75rem;
 }
 
 /* The default. :root matches whatever paper is set, so this block comes first

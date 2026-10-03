@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { TextButton } from '#/components/ui/text-button'
 import {
   defaultPaperChoice,
   papers,
@@ -16,8 +17,8 @@ const paperModes = [
 ] as const
 
 /**
- * Bottom left, in the margin the conversation leaves free; only where that
- * margin is wide enough to hold it ((1200 − 816) / 2 = 192px).
+ * Bottom left, in the margin the conversation leaves free; only from the
+ * `picker` breakpoint up, where that margin is wide enough to hold it.
  */
 export function PaperPicker() {
   const [choice, setChoice] = useState<PaperChoice>(defaultPaperChoice)
@@ -35,7 +36,7 @@ export function PaperPicker() {
   }
 
   return (
-    <div className="fixed bottom-[30px] left-11 hidden flex-col gap-4 font-meta text-[10px] uppercase tracking-[0.16em] text-ink-mute min-[1200px]:flex">
+    <div className="font-meta text-meta uppercase fixed bottom-[30px] left-11 hidden flex-col gap-4 text-ink-mute picker:flex">
       {paperModes.map(({ mode, label }) => (
         <div
           aria-label={label}
@@ -50,12 +51,12 @@ export function PaperPicker() {
               const picked = choice[mode] === paper.id
               const shown = picked && choice.mode === mode
               return (
-                <button
+                <TextButton
                   aria-pressed={picked}
-                  className={`flex cursor-pointer items-center gap-3 uppercase tracking-[0.16em] hover:text-ink ${picked ? 'text-ink' : ''}`}
+                  className="flex items-center gap-3"
                   key={paper.id}
                   onClick={() => pick(paper)}
-                  type="button"
+                  tone={picked ? 'ink' : 'mute'}
                 >
                   <span
                     className={`border p-px ${shown ? 'border-ink' : 'border-rule-strong'}`}
@@ -68,7 +69,7 @@ export function PaperPicker() {
                     />
                   </span>
                   {paper.name}
-                </button>
+                </TextButton>
               )
             })}
         </div>

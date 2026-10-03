@@ -1,3 +1,4 @@
+import { TextButton } from '#/components/ui/text-button'
 import { formatJson, isJsonObject, isJsonString, type JsonValue } from '#/lib/json'
 import type { WorkCall } from '#/lib/write-receipts'
 
@@ -58,11 +59,11 @@ export function describeWork(calls: Array<WorkCall>) {
 }
 
 /**
- * Viewports wide enough to set a turn's calls in the margin beside it
- * ((1376 − 816) / 2 = 280px); narrower ones fold them under the reply.
+ * Viewports from the `margin` breakpoint up are wide enough to set a turn's
+ * calls in the margin beside it; narrower ones fold them under the reply.
  */
-export const marginClass = 'hidden min-[1376px]:block'
-const inlineClass = 'min-[1376px]:hidden'
+export const marginClass = 'hidden margin:block'
+const inlineClass = 'margin:hidden'
 
 function WorkBlock({ run }: { run: CallRun }) {
   // A lone call shows what came back; a run shows each call's inputs.
@@ -120,7 +121,7 @@ function WorkCalls({ calls }: { calls: Array<WorkCall> }) {
 export function WorkMargin({ calls }: { calls: Array<WorkCall> }) {
   return (
     <div className="flex flex-col gap-3">
-      <div className="font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint">
+      <div className="font-meta text-meta uppercase text-ink-faint">
         {describeWork(calls)}
       </div>
       <WorkCalls calls={calls} />
@@ -140,14 +141,14 @@ export function WorkToggle({
 }) {
   return (
     <div className={`flex max-w-[86%] flex-col gap-3 ${inlineClass}`}>
-      <button
+      <TextButton
         aria-expanded={open}
-        className="cursor-pointer self-start font-meta text-[10px] uppercase tracking-[0.16em] text-ink-faint hover:text-ink"
+        className="self-start"
         onClick={onToggle}
-        type="button"
+        tone="faint"
       >
         {describeWork(calls)} · {open ? 'ocultar' : 'ver'}
-      </button>
+      </TextButton>
       {open && (
         <div className="border-l border-rule pl-[14px]">
           <WorkCalls calls={calls} />

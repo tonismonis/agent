@@ -1,5 +1,7 @@
 import type { Ref } from 'react'
 
+import { TextButton } from '#/components/ui/text-button'
+
 export function Composer({
   ref,
   input,
@@ -17,7 +19,7 @@ export function Composer({
 }) {
   return (
     <form
-      className="mx-auto w-full max-w-[816px] px-11 pb-[30px] pt-[22px]"
+      className="mx-auto w-full max-w-column px-11 pb-[30px] pt-[22px]"
       onSubmit={(event) => {
         event.preventDefault()
         onSubmit()
@@ -40,21 +42,18 @@ export function Composer({
           value={input}
         />
         {isLoading ? (
-          <button
-            className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
-            onClick={onStop}
-            type="button"
-          >
+          <TextButton className="shrink-0 self-center" onClick={onStop} tone="mute">
             detener
-          </button>
+          </TextButton>
         ) : (
-          <button
-            className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
+          <TextButton
+            className="shrink-0 self-center"
             disabled={!input.trim()}
+            tone="mute"
             type="submit"
           >
             enviar
-          </button>
+          </TextButton>
         )}
       </div>
     </form>
