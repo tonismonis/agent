@@ -1,0 +1,62 @@
+import type { Ref } from 'react'
+
+export function Composer({
+  ref,
+  input,
+  isLoading,
+  onInputChange,
+  onSubmit,
+  onStop,
+}: {
+  ref: Ref<HTMLTextAreaElement>
+  input: string
+  isLoading: boolean
+  onInputChange: (value: string) => void
+  onSubmit: () => void
+  onStop: () => void
+}) {
+  return (
+    <form
+      className="mx-auto w-full max-w-[816px] px-11 pb-[30px] pt-[22px]"
+      onSubmit={(event) => {
+        event.preventDefault()
+        onSubmit()
+      }}
+    >
+      <div className="flex items-center gap-5 border border-rule-strong px-[18px] py-[15px]">
+        <textarea
+          ref={ref}
+          aria-label="Mensaje"
+          className="max-h-[40vh] min-h-[27px] flex-1 resize-none bg-transparent font-read text-[18px] font-light leading-[1.5] text-ink outline-none field-sizing-content placeholder:text-ink-ghost disabled:text-ink-mute"
+          onChange={(event) => onInputChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              onSubmit()
+            }
+          }}
+          placeholder="Pregunta, o cuéntame qué pasó…"
+          rows={1}
+          value={input}
+        />
+        {isLoading ? (
+          <button
+            className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink"
+            onClick={onStop}
+            type="button"
+          >
+            detener
+          </button>
+        ) : (
+          <button
+            className="shrink-0 cursor-pointer self-center font-meta text-[10px] uppercase tracking-[0.14em] text-ink-mute hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
+            disabled={!input.trim()}
+            type="submit"
+          >
+            enviar
+          </button>
+        )}
+      </div>
+    </form>
+  )
+}

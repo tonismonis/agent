@@ -7,7 +7,7 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import { ChatView, workStorageKey } from '#/components/chat-view'
+import { ChatView, workStorageKey } from '#/routes/-chat/chat-view'
 import { papers, pickPaper, readStoredPaperChoice, showPaper } from '#/lib/paper'
 import { states, type ChatState, type StateName } from './fixtures'
 
