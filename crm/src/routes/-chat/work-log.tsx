@@ -2,12 +2,12 @@ import { TextButton } from '#/components/ui/text-button'
 import { formatJson, isJsonObject, isJsonString, type JsonValue } from '#/lib/json'
 import type { WorkCall } from '#/lib/write-receipts'
 
-export function truncate(text: string, limit: number) {
+function truncate(text: string, limit: number) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
 
 /** `client_id=8 · limit=10` — the call's inputs on one line. */
-export function formatArgs(args: JsonValue | undefined) {
+function formatArgs(args: JsonValue | undefined) {
   if (args === undefined || args === null) return ''
   if (!isJsonObject(args)) return truncate(formatJson(args), 90)
   const entries = Object.entries(args)
@@ -28,7 +28,7 @@ export function formatArgs(args: JsonValue | undefined) {
 /** Back-to-back calls to one tool: three bookings read as one entry. */
 type CallRun = { key: string; name: string; calls: Array<WorkCall> }
 
-export function foldCalls(calls: Array<WorkCall>) {
+function foldCalls(calls: Array<WorkCall>) {
   const runs: Array<CallRun> = []
   for (const call of calls) {
     const last = runs.at(-1)
@@ -38,12 +38,12 @@ export function foldCalls(calls: Array<WorkCall>) {
   return runs
 }
 
-export function totalMs(calls: Array<WorkCall>) {
+function totalMs(calls: Array<WorkCall>) {
   return calls.reduce((sum, call) => sum + (call.durationMs ?? 0), 0)
 }
 
 /** `3 llamadas · 114 ms · 1 rechazada · 1 error` */
-export function describeWork(calls: Array<WorkCall>) {
+function describeWork(calls: Array<WorkCall>) {
   const failed = calls.filter((call) => call.error !== undefined)
   const refused = failed.filter((call) => call.refused).length
   const errors = failed.length - refused
