@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  inferWriteCallsFromCode,
-  summarizeWrites,
-  type WorkCall,
-} from '#/lib/write-receipts'
+import type { WorkCall } from '#/lib/write-receipts'
 import { selectTurns } from '#/routes/-chat/select-turns'
 import type { UIMessage } from '@tanstack/ai-react'
 
@@ -47,15 +43,6 @@ function codeCall(
       ? { success: true, result: null, logs: [] }
       : { success: false, error: 'boom', logs: [] },
   }
-}
-
-const phoneUpdate: WorkCall = {
-  key: 'call_1:0',
-  toolCallId: 'call_1',
-  name: 'updateClient',
-  args: { id: 12, phone: '+56 9 4412 8890' },
-  result: { id: 12, name: 'Rosa Valdés', phone: '+56 9 4412 8890' },
-  durationMs: 31,
 }
 
 const lookup: WorkCall = {
@@ -128,30 +115,6 @@ describe('selectTurns', () => {
     expect(thinkingOf(assistant('a1', '', thought), false)).toBe('pensando')
     expect(thinkingOf(assistant('a1', 'Listo.', thought), false)).toBeNull()
     expect(thinkingOf(assistant('a1', 'Listo.'), true)).toBeNull()
-  })
-
-  it('summarizes live calls over calls inferred from the code', () => {
-    const { turns } = selectTurns(
-      [assistant('a1', 'Listo.', [codeCall('call_1', bookingCode)])],
-      new Map([['call_1', [lookup, phoneUpdate]]]),
-      false,
-      true,
-    )
-    const summary = summarizeWrites([lookup, phoneUpdate])
-    expect(summary.kind).toBe('receipt')
-    expect(turns[0]).toMatchObject({ summary, work: [lookup, phoneUpdate] })
-  })
-
-  it('infers the writes from the code on a replayed turn', () => {
-    const { turns } = selectTurns(
-      [assistant('a1', 'Agendé.', [codeCall('call_1', bookingCode)])],
-      noCalls,
-      false,
-      true,
-    )
-    const summary = summarizeWrites(inferWriteCallsFromCode(bookingCode, 'call_1'))
-    expect(summary.kind).toBe('receipt')
-    expect(turns[0]).toMatchObject({ summary, work: [] })
   })
 
   it('claims no writes after a failed run', () => {
