@@ -19,8 +19,8 @@ import { createNodeIsolateDriver } from '@tanstack/ai-isolate-node'
 import { openRouterText } from '@tanstack/ai-openrouter'
 import { reconstructChat, withPersistence } from '@tanstack/ai-persistence'
 
-import { createOwnerChatPersistence } from '#/lib/chat-persistence'
-import { createChatTools } from '#/lib/chat-tools'
+import { createOwnerChatPersistence } from '#/lib/chat-persistence.server'
+import { createChatTools } from '#/lib/chat-tools.server'
 import { getDailyThreadId } from '#/lib/chat-thread'
 import {
   CHAT_MODEL,
@@ -29,7 +29,7 @@ import {
 } from '#/lib/inference-config'
 import { buildAppPrompt } from '#/lib/system-prompt'
 import { readRefusal } from '#/lib/refusal'
-import { runOwnerTool } from '#/lib/tools'
+import { runOwnerTool } from '#/lib/tools.server'
 
 import type { ChatMiddleware, StreamChunk, TokenUsage } from '@tanstack/ai'
 import type { owners } from '#/db/schema'

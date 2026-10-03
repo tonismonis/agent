@@ -4,7 +4,7 @@ import { afterEach, expect, test } from 'vitest'
 
 import { db } from '#/db'
 import { clients, owners } from '#/db/schema'
-import { resolveOwnerContext } from './owner-context'
+import { resolveOwnerContext } from './owner-context.server'
 
 const adminDb = drizzle(
   process.env.DATABASE_ADMIN_URL ?? 'postgresql://crm:crm@localhost:5433/crm',

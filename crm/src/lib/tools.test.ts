@@ -3,7 +3,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { aroundEach, beforeAll, beforeEach, describe, expect, test } from 'vitest'
 import { db, withOwnerTxn } from '#/db'
-import { chatTools } from './chat-tools'
+import { chatTools } from './chat-tools.server'
 import { readRefusal } from './refusal'
 import { refusalOf } from '#/test/refusals'
 import {
@@ -44,7 +44,7 @@ import {
   updateOwnerProfile,
   updatePayment,
   updateService,
-} from './tools'
+} from './tools.server'
 
 const ownerA = '11111111-1111-4111-8111-111111111111'
 const ownerB = '22222222-2222-4222-8222-222222222222'

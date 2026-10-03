@@ -3,11 +3,11 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import { beforeAll, beforeEach, expect, test } from 'vitest'
 
 import { messages, owners, runs } from '#/db/schema'
-import { createOwnerChatPersistence } from './chat-persistence'
+import { createOwnerChatPersistence } from './chat-persistence.server'
 import {
   enforceOwnerInferenceCap,
   getOwnerInferenceUsage,
-} from './inference-usage'
+} from './inference-usage.server'
 
 const ownerA = '33333333-3333-4333-8333-333333333333'
 const ownerB = '44444444-4444-4444-8444-444444444444'

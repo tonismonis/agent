@@ -1,1 +1,1 @@
-export { db, withOwnerTxn } from '#/lib/owner-context'
+export { db, withOwnerTxn } from '#/lib/owner-context.server'

@@ -26,7 +26,7 @@ import {
   createService,
   runOwnerTool,
   updateAppointmentSeries,
-} from './tools'
+} from './tools.server'
 
 const ownerId = '77777777-7777-4777-8777-777777777777'
 const adminDb = drizzle(

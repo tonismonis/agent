@@ -17,15 +17,15 @@ import {
   owners,
   services,
 } from '#/db/schema'
-import { withRefusalOutput } from './chat-run'
-import { bindTool, chatTools, createChatTools } from './chat-tools'
+import { withRefusalOutput } from './chat-run.server'
+import { bindTool, chatTools, createChatTools } from './chat-tools.server'
 import { readRefusal } from './refusal'
 import {
   createAppointment,
   createClient,
   createService,
   runOwnerTool,
-} from './tools'
+} from './tools.server'
 
 const ownerId = '88888888-8888-4888-8888-888888888888'
 const adminDb = drizzle(

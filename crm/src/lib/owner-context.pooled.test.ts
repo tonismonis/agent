@@ -26,14 +26,14 @@ const pooledUrl =
 process.env.DATABASE_URL = pooledUrl
 
 const { db, withOwnerTxn } = await import('#/db')
-const { createOwnerChatPersistence } = await import('./chat-persistence')
+const { createOwnerChatPersistence } = await import('./chat-persistence.server')
 const {
   createClient,
   createService,
   findClients,
   findServices,
   listAuditLog,
-} = await import('./tools')
+} = await import('./tools.server')
 
 const adminDb = drizzle(
   process.env.DATABASE_ADMIN_URL ?? 'postgresql://crm:crm@localhost:5433/crm',
