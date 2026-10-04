@@ -1,5 +1,6 @@
 import { convertSchemaToJsonSchema, toolDefinition } from '@tanstack/ai'
 
+import type { JsonValue } from '#/lib/json'
 import { RefusalError, refuse } from '#/lib/refusal'
 
 import {
@@ -13,6 +14,7 @@ import {
   findClients,
   findPayments,
   findServices,
+  findWriteSubject,
   listAuditLog,
   restoreAppointment,
   restoreAppointmentSeries,
@@ -32,7 +34,7 @@ import {
   updateService,
   type CrmTool,
 } from '#/lib/tools.server'
-import { writeEventName } from '#/lib/receipt-facts'
+import { classifyRefusal, lookupWriteTool, writeEventName } from '#/lib/receipt-facts'
 import { isWriteTool } from '#/lib/write-receipts'
 
 import type { z } from 'zod'
@@ -74,9 +76,23 @@ export function bindTool<
       // SAFETY: execute parses its raw input itself and refuses anything else.
       result = await run(() => tool.execute(input as z.input<TSchema>))
     } catch (error) {
-      if (error instanceof RefusalError) throw error
-      console.error('tool failed outside its transaction', tool.name, error)
-      throw refuse.internal(write)
+      if (!(error instanceof RefusalError))
+        console.error('tool failed outside its transaction', tool.name, error)
+      const refusal = error instanceof RefusalError ? error : refuse.internal(write)
+      const reason = classifyRefusal(refusal.refusal.kind)
+      const writeTool = lookupWriteTool(tool.name)
+      if (reason && writeTool)
+        context?.emitCustomEvent(writeEventName, {
+          status: 'refused',
+          name: tool.name,
+          args: input,
+          reason,
+          subject: await run(() =>
+            // SAFETY: a tool input is the JSON the model called the tool with.
+            findWriteSubject(writeTool.record, writeTool.action, input as JsonValue),
+          ).catch(() => null),
+        })
+      throw refusal
     }
     const json = toJson(result)
     const output = tool.outputSchema.safeParse(json)
@@ -86,7 +102,12 @@ export function bindTool<
       console.error('tool output does not match its schema', tool.name, output.error)
     const saved = output.success ? output.data : json
     if (write)
-      context?.emitCustomEvent(writeEventName, { name: tool.name, args: input, result: saved })
+      context?.emitCustomEvent(writeEventName, {
+        status: 'saved',
+        name: tool.name,
+        args: input,
+        result: saved,
+      })
     return saved
   })
 }
