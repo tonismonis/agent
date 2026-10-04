@@ -39,13 +39,12 @@ type Habit =
 
 /**
  * Weeks count from the first Monday after today: week 0 is the coming week,
- * -1 the one ending now. A client starting after FIRST_WEEK first comes to an
- * Evaluación inicial the week before, in their first slot.
+ * -1 the one ending now.
  */
 type Visits =
   | {
       kind: 'series'
-      service: 'individual' | 'couple'
+      service: ServiceKind
       slots: ReadonlyArray<Slot>
       from: number
       /** The week of the last class; the series is ended right after it. */
@@ -53,13 +52,14 @@ type Visits =
     }
   | {
       kind: 'ad_hoc'
-      service: 'individual' | 'couple'
+      service: ServiceKind
       everyWeeks: number
       /** In order of preference; the first free one is booked. */
       slots: ReadonlyArray<Slot>
       from: number
     }
-  | { kind: 'evaluation'; week: number; slot: Slot }
+  /** Came to one session and never booked again. */
+  | { kind: 'once'; week: number; slot: Slot }
 
 type Person = {
   name: string
@@ -73,15 +73,14 @@ type Person = {
 
 const SEED = 20_260_504
 const FIRST_WEEK = -22
-const WORK_SLOTS = ['09:00', '10:00', '11:00', '12:00', '15:00', '16:00', '17:00', '18:00']
+/** Monday to Friday, 9 to 18: the last session starts at 17:00. */
+const WORK_SLOTS = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00']
 const PROFESSION = 'Psicología clínica'
 const PRICE_BEFORE_RAISE = 38_000
 
 const SERVICES = {
-  individual: { name: 'Sesión individual', price: 40_000, minutes: 50 },
-  couple: { name: 'Terapia de pareja', price: 55_000, minutes: 75 },
-  evaluation: { name: 'Evaluación inicial', price: 45_000, minutes: 60 },
-  report: { name: 'Informe psicológico', price: 80_000, minutes: null },
+  individual: { name: 'Sesión individual', price: 40_000, minutes: 60 },
+  couple: { name: 'Terapia de pareja', price: 55_000, minutes: 60 },
 } as const
 type ServiceKind = keyof typeof SERVICES
 
@@ -145,7 +144,7 @@ const ROSTER: ReadonlyArray<Person> = [
     notes: 'Viene con su pareja, Diego',
     mode: 'in_person',
     habit: perSession,
-    visits: { kind: 'series', service: 'couple', slots: [['monday', '18:00']], from: -20 },
+    visits: { kind: 'series', service: 'couple', slots: [['monday', '15:00']], from: -20 },
   },
   {
     name: 'Isidora Araya',
@@ -168,7 +167,7 @@ const ROSTER: ReadonlyArray<Person> = [
     phone: '+56 9 8876 5521',
     mode: 'online',
     habit: perSession,
-    visits: { kind: 'series', service: 'individual', slots: [['tuesday', '18:00']], from: -22 },
+    visits: { kind: 'series', service: 'individual', slots: [['tuesday', '17:00']], from: -22 },
   },
   {
     name: 'Ignacio Espinoza',
@@ -231,7 +230,7 @@ const ROSTER: ReadonlyArray<Person> = [
     notes: 'Prefiere online',
     mode: 'online',
     habit: perSession,
-    visits: { kind: 'series', service: 'individual', slots: [['thursday', '18:00']], from: -18 },
+    visits: { kind: 'series', service: 'individual', slots: [['thursday', '10:00']], from: -18 },
   },
   {
     name: 'Antonia Morales',
@@ -303,14 +302,14 @@ const ROSTER: ReadonlyArray<Person> = [
   {
     name: 'Florencia Castillo',
     email: 'flo.castillo@gmail.com',
-    notes: 'Solo puede los sábados',
+    notes: 'Solo puede los viernes',
     mode: 'in_person',
     habit: perSession,
     visits: {
       kind: 'ad_hoc',
       service: 'individual',
       everyWeeks: 3,
-      slots: [['saturday', '10:00'], ['saturday', '11:00']],
+      slots: [['friday', '14:00'], ['friday', '13:00']],
       from: -21,
     },
   },
@@ -332,42 +331,26 @@ const ROSTER: ReadonlyArray<Person> = [
     email: 'fer.diaz@gmail.com',
     mode: 'online',
     habit: perSession,
-    visits: { kind: 'evaluation', week: -16, slot: ['tuesday', '16:00'] },
+    visits: { kind: 'once', week: -16, slot: ['tuesday', '16:00'] },
   },
   {
     name: 'Sofía Ramírez',
     phone: '+56 9 7788 2045',
     mode: 'in_person',
     habit: perSession,
-    visits: { kind: 'evaluation', week: -5, slot: ['thursday', '12:00'] },
+    visits: { kind: 'once', week: -5, slot: ['thursday', '12:00'] },
   },
 ]
 
 /** Created twice by mistake one week in, and soft-deleted minutes later. */
 const DUPLICATE = { of: 'Sebastián Rojas', name: 'Sebastian Rojas', week: -21 }
 
-/** Reports paid for apart from any session. */
-const REPORTS = [
-  {
-    client: 'Benjamín Contreras',
-    week: -9,
-    day: 'thursday',
-    notes: 'Informe psicológico para Isapre',
-  },
-  {
-    client: 'Isidora Araya',
-    week: -4,
-    day: 'tuesday',
-    notes: 'Informe psicológico para el trabajo',
-  },
-] as const
-
 /** One class moved alone to another day; its series date stays put. */
 const MOVED = {
   client: 'Valentina Muñoz',
   week: 1,
   from: 'tuesday',
-  to: ['wednesday', '18:00'],
+  to: ['wednesday', '14:00'],
 } as const
 
 type ServiceRow = {
@@ -375,7 +358,7 @@ type ServiceRow = {
   name: string
   firstPrice: number
   price: number
-  minutes: number | null
+  minutes: number
   created: Wall
   updated: Wall
 }
@@ -582,8 +565,6 @@ function planDemo(today: LocalDate): DemoPlan {
   const services = {
     individual: serviceRow('individual', 0),
     couple: serviceRow('couple', 1),
-    evaluation: serviceRow('evaluation', 2),
-    report: serviceRow('report', 3),
   }
   for (const row of Object.values(services)) {
     plan.services.push(row)
@@ -601,7 +582,7 @@ function planDemo(today: LocalDate): DemoPlan {
     booked < individual.updated ? row.firstPrice : row.price
 
   /** Past classes become completed, cancelled or no-shows, as the Owner closed them. */
-  const settle = (appointment: AppointmentRow, mayMiss: boolean) => {
+  const settle = (appointment: AppointmentRow) => {
     const date = appointment.starts.slice(0, 10)
     if (date >= today) return
     const end = later(appointment.starts, appointment.minutes)
@@ -613,7 +594,7 @@ function planDemo(today: LocalDate): DemoPlan {
       ts = later(at(notice, '19:00'), pick(90))
     } else if (date >= addDays(today, -3) && rng() < 0.5) {
       return
-    } else if (mayMiss) {
+    } else {
       const roll = rng()
       if (roll < 0.04) {
         status = 'cancelled'
@@ -637,7 +618,7 @@ function planDemo(today: LocalDate): DemoPlan {
     booked: Wall,
   ) => {
     const row = services[kind]
-    const minutes = row.minutes ?? 60
+    const { minutes } = row
     agenda.book(date, clock, minutes)
     const appointment: AppointmentRow = {
       client,
@@ -654,7 +635,7 @@ function planDemo(today: LocalDate): DemoPlan {
     }
     plan.appointments.push(appointment)
     plan.audit.push({ tool: 'createAppointment', ts: booked, appointment })
-    settle(appointment, kind !== 'evaluation')
+    settle(appointment)
     return appointment
   }
 
@@ -666,17 +647,6 @@ function planDemo(today: LocalDate): DemoPlan {
         : later(at(addDays(date, -3), '19:00'), pick(90)),
       yesterdayEvening,
     )
-
-  const evaluate = (
-    person: Person,
-    client: ClientRow,
-    date: LocalDate,
-    clocks: ReadonlyArray<Clock>,
-  ) => {
-    const clock = clocks.find((each) => agenda.isFree(date, each, services.evaluation.minutes ?? 60))
-    if (clock === undefined) throw new Error(`no free hour for ${person.name}'s evaluation on ${date}`)
-    return bookSingle(person, client, 'evaluation', date, clock, bookingTime(date, undefined))
-  }
 
   const byName = new Map<string, ClientRow>()
   for (const person of ROSTER) {
@@ -693,22 +663,24 @@ function planDemo(today: LocalDate): DemoPlan {
     const { visits } = person
 
     switch (visits.kind) {
-      case 'evaluation': {
-        evaluate(person, client, dateIn(visits.week, visits.slot[0]), [visits.slot[1], ...WORK_SLOTS])
+      case 'once': {
+        const date = dateIn(visits.week, visits.slot[0])
+        const clock = [visits.slot[1], ...WORK_SLOTS].find((each) =>
+          agenda.isFree(date, each, services.individual.minutes),
+        )
+        if (clock === undefined) throw new Error(`no free hour for ${person.name} on ${date}`)
+        bookSingle(person, client, 'individual', date, clock, bookingTime(date, undefined))
         break
       }
       case 'series': {
         const [firstDay, firstClock] = visits.slots[0]
-        const intake =
-          visits.from > FIRST_WEEK
-            ? evaluate(person, client, dateIn(visits.from - 1, firstDay), [firstClock])
-            : undefined
-        const created = intake
-          ? later(intake.starts, intake.minutes + 10)
-          : later(setup, 10 + plan.series.length * 3)
         const row = services[visits.service]
-        const minutes = row.minutes ?? 60
+        const { minutes } = row
         const startsOn = dateIn(visits.from, 'monday')
+        const created =
+          visits.from > FIRST_WEEK
+            ? bookingTime(startsOn, undefined)
+            : later(setup, 10 + plan.series.length * 3)
         const lastClass = visits.lastWeek === undefined ? undefined : dateIn(visits.lastWeek, firstDay)
         const end = lastClass
           ? { until: lastClass, at: later(at(lastClass, firstClock), minutes + 20) }
@@ -760,7 +732,7 @@ function planDemo(today: LocalDate): DemoPlan {
             // instant; that is how a later extension finds them to reopen.
             appointment.status = 'cancelled'
             appointment.updated = end.at
-          } else settle(appointment, true)
+          } else settle(appointment)
         }
         if (raise) {
           series.price = row.price
@@ -785,11 +757,8 @@ function planDemo(today: LocalDate): DemoPlan {
         break
       }
       case 'ad_hoc': {
-        let previous =
-          visits.from > FIRST_WEEK
-            ? evaluate(person, client, dateIn(visits.from - 1, visits.slots[0][0]), [visits.slots[0][1]])
-            : undefined
-        const minutes = services[visits.service].minutes ?? 60
+        let previous: AppointmentRow | undefined
+        const { minutes } = services[visits.service]
         for (let week = visits.from; ; week += visits.everyWeeks) {
           const preferred = pick(5) === 0 ? [...visits.slots].reverse() : visits.slots
           const options = preferred
@@ -874,21 +843,6 @@ function planDemo(today: LocalDate): DemoPlan {
     })
   }
 
-  for (const report of REPORTS) {
-    const client = byName.get(report.client)
-    if (!client) throw new Error(`no client ${report.client}`)
-    const paidAt = later(at(dateIn(report.week, report.day), '19:00'), pick(60))
-    const payment: PaymentRow = {
-      client,
-      appointment: null,
-      amount: services.report.price,
-      paidAt,
-      notes: report.notes,
-    }
-    plan.payments.push(payment)
-    plan.audit.push({ tool: 'createPayment', ts: paidAt, payment })
-  }
-
   for (const client of plan.clients) {
     const first = [...plan.series, ...plan.appointments]
       .filter((row) => row.client === client)
@@ -928,7 +882,7 @@ function auditRow(entry: AuditEntry, idOf: (row: Row) => number) {
     case 'createService': {
       const { name, firstPrice, minutes } = entry.service
       return {
-        input: { name, price: firstPrice, unit: 'flat', duration_minutes: minutes ?? undefined },
+        input: { name, price: firstPrice, unit: 'flat', duration_minutes: minutes },
         entity: 'service',
         entity_id: idOf(entry.service),
       }
