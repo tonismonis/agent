@@ -1,5 +1,5 @@
 import type { JsonValue } from '#/lib/json'
-import { readReceipt, type ReceiptFact } from '#/lib/receipt-facts'
+import { groupFacts, readReceipt, type ReceiptFact } from '#/lib/receipt-facts'
 import type { WorkCall } from '#/lib/write-receipts'
 import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
 
@@ -47,17 +47,19 @@ function toolCallPartsOf(message: UIMessage) {
 }
 
 /**
- * What one turn saved: the receipt each of its execute_typescript runs
- * returned, in order. A run with no output yet has none.
+ * What one turn saved: the receipts of its execute_typescript runs, grouped
+ * across runs. A run with no output yet has none.
  */
 function receiptOf(message: UIMessage) {
-  return toolCallPartsOf(message)
-    .filter((part) => part.name === 'execute_typescript')
-    .flatMap((part) => {
-      // SAFETY: the tool's output is the JSON its server handler returned.
-      const output = part.output as JsonValue | undefined
-      return readReceipt(output)
-    })
+  return groupFacts(
+    toolCallPartsOf(message)
+      .filter((part) => part.name === 'execute_typescript')
+      .flatMap((part) => {
+        // SAFETY: the tool's output is the JSON its server handler returned.
+        const output = part.output as JsonValue | undefined
+        return readReceipt(output)
+      }),
+  )
 }
 
 /** The live calls one turn made, as code-mode events reported them. */
@@ -68,6 +70,24 @@ function liveCallsOf(
   return toolCallPartsOf(message).flatMap(
     (part) => callsByToolCall.get(part.id) ?? [],
   )
+}
+
+/**
+ * A saved turn comes back as one assistant message per model step, while the
+ * live turn is one message. Folding each run of assistant messages into the
+ * last one makes a reloaded turn read like the live one.
+ */
+function foldAssistantSteps(messages: Array<UIMessage>) {
+  return messages.reduce<Array<UIMessage>>((folded, message) => {
+    const previous = folded.at(-1)
+    if (previous?.role === 'assistant' && message.role === 'assistant')
+      folded[folded.length - 1] = {
+        ...message,
+        parts: [...previous.parts, ...message.parts],
+      }
+    else folded.push(message)
+    return folded
+  }, [])
 }
 
 /**
@@ -86,7 +106,7 @@ export function selectTurns(
   const streamingOnLastAssistant =
     isLoading && messages.at(-1)?.role === 'assistant'
 
-  const turns = messages.flatMap((message): Array<Turn> => {
+  const turns = foldAssistantSteps(messages).flatMap((message): Array<Turn> => {
     const text = textOf(message)
     const thinkingText = thinkingOf(message)
     const receipt = message.role === 'assistant' ? receiptOf(message) : []
