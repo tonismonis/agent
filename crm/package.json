@@ -18,7 +18,8 @@
     "db:push": "drizzle-kit push",
     "db:pull": "drizzle-kit pull",
     "db:studio": "drizzle-kit studio",
-    "demo:reset": "node scripts/reset-demo-data.ts"
+    "demo:reset": "node scripts/reset-demo-data.ts",
+    "demo:seed": "node scripts/seed-demo-data.ts"
   },
   "dependencies": {
     "@clerk/localizations": "^4.18.0",

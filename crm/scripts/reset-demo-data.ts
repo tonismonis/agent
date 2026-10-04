@@ -2,16 +2,9 @@
  * Wipes every CRM table except owners before a demo. Sign-in is invite-only,
  * so an owners row is the only thing that cannot be recreated by using the app.
  */
-import { config } from 'dotenv'
-import pg from 'pg'
+import type pg from 'pg'
 
-config({ path: ['.env.local', '.env'], quiet: true })
-
-function requiredEnv(name: string) {
-  const value = process.env[name]
-  if (!value) throw new Error(`${name} is required`)
-  return value
-}
+import { localAdminClient } from './local-admin.ts'
 
 const DATA_TABLES = [
   'audit_log',
@@ -25,14 +18,8 @@ const DATA_TABLES = [
   'payments',
 ] as const
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
-
-const adminUrl = requiredEnv('DATABASE_ADMIN_URL')
-const host = new URL(adminUrl).hostname
-if (!LOCAL_HOSTS.has(host)) {
-  console.error(`refusing to reset: DATABASE_ADMIN_URL host is ${host}, not local`)
-  process.exit(1)
-}
+// The app role cannot delete audit_log rows, so this runs as the admin role.
+const admin = localAdminClient('reset')
 
 async function count(client: pg.Client, table: string) {
   const { rows } = await client.query<{ n: number }>(
@@ -41,8 +28,6 @@ async function count(client: pg.Client, table: string) {
   return rows[0].n
 }
 
-// The app role cannot delete audit_log rows, so this runs as the admin role.
-const admin = new pg.Client({ connectionString: adminUrl })
 await admin.connect()
 try {
   await admin.query('BEGIN')
