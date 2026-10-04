@@ -3,7 +3,7 @@ import { expect } from 'vitest'
 import { readRefusal } from '#/lib/refusal'
 
 /** The refusal a call rejected with, read the way the model reads it: from the message. */
-export async function refusalOf<T>(call: Promise<T>) {
+export async function expectRefusal<T>(call: Promise<T>) {
   const error = await call.then(
     () => null,
     (reason: Error) => reason,

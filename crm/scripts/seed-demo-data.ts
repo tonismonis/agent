@@ -452,7 +452,7 @@ function addDays(date: LocalDate, days: number): LocalDate {
   return new Date(Date.parse(`${date}T00:00Z`) + days * DAY_MS).toISOString().slice(0, 10)
 }
 
-function weekdayOf(date: LocalDate) {
+function getWeekday(date: LocalDate) {
   return new Date(`${date}T00:00Z`).getUTCDay()
 }
 
@@ -468,7 +468,7 @@ function earliest(a: Wall, b: Wall) {
   return a < b ? a : b
 }
 
-function minutesOf(clock: Clock) {
+function clockToMinutes(clock: Clock) {
   const [hours, minutes] = clock.split(':').map(Number)
   return hours * 60 + minutes
 }
@@ -483,14 +483,14 @@ function nthBusinessDay(first: LocalDate, n: number) {
   let date = first
   let seen = 0
   for (;;) {
-    const weekday = weekdayOf(date)
+    const weekday = getWeekday(date)
     if (weekday !== 0 && weekday !== 6 && ++seen === n) return date
     date = addDays(date, 1)
   }
 }
 
 function lastWeekdayOnOrBefore(date: LocalDate, weekday: number) {
-  return addDays(date, -((weekdayOf(date) - weekday + 7) % 7))
+  return addDays(date, -((getWeekday(date) - weekday + 7) % 7))
 }
 
 /**
@@ -519,12 +519,12 @@ function calendarFor(anchor: LocalDate, start: LocalDate) {
 function createAgenda() {
   const byDate = new Map<LocalDate, Array<[number, number]>>()
   const isFree = (date: LocalDate, clock: Clock, minutes: number) => {
-    const from = minutesOf(clock)
+    const from = clockToMinutes(clock)
     return (byDate.get(date) ?? []).every(([s, e]) => from + minutes <= s || from >= e)
   }
   const book = (date: LocalDate, clock: Clock, minutes: number) => {
     const taken = byDate.get(date) ?? []
-    taken.push([minutesOf(clock), minutesOf(clock) + minutes])
+    taken.push([clockToMinutes(clock), clockToMinutes(clock) + minutes])
     byDate.set(date, taken)
   }
   return { isFree, book }
@@ -538,7 +538,7 @@ function planDemo(today: LocalDate): DemoPlan {
   const rng = mulberry32(SEED)
   const pick = (n: number) => Math.floor(rng() * n)
   let anchor = addDays(today, 1)
-  while (weekdayOf(anchor) !== 1) anchor = addDays(anchor, 1)
+  while (getWeekday(anchor) !== 1) anchor = addDays(anchor, 1)
   const dateIn = (week: number, day: Weekday) =>
     addDays(anchor, week * 7 + ((WEEKDAYS.indexOf(day) + 6) % 7))
   const start = dateIn(FIRST_WEEK, 'monday')
@@ -706,7 +706,7 @@ function planDemo(today: LocalDate): DemoPlan {
             ? undefined
             : { from: calendar.priceRaise, at: later(individual.updated, 2 + plan.series.length) }
         for (let date = startsOn; date <= calendar.seriesUntil; date = addDays(date, 1)) {
-          const slot = visits.slots.find(([day]) => WEEKDAYS.indexOf(day) === weekdayOf(date))
+          const slot = visits.slots.find(([day]) => WEEKDAYS.indexOf(day) === getWeekday(date))
           if (!slot) continue
           agenda.book(date, slot[1], minutes)
           const appointment: AppointmentRow = {
@@ -877,83 +877,83 @@ function planDemo(today: LocalDate): DemoPlan {
 }
 
 /** The tool input, entity and entity id a write of the Owner's left in the audit log. */
-function auditRow(entry: AuditEntry, idOf: (row: Row) => number) {
+function auditRow(entry: AuditEntry, lookupId: (row: Row) => number) {
   switch (entry.tool) {
     case 'createService': {
       const { name, firstPrice, minutes } = entry.service
       return {
         input: { name, price: firstPrice, unit: 'flat', duration_minutes: minutes },
         entity: 'service',
-        entity_id: idOf(entry.service),
+        entity_id: lookupId(entry.service),
       }
     }
     case 'updateService':
       return {
-        input: { id: idOf(entry.service), price: entry.price },
+        input: { id: lookupId(entry.service), price: entry.price },
         entity: 'service',
-        entity_id: idOf(entry.service),
+        entity_id: lookupId(entry.service),
       }
     case 'createClient': {
       const { name, email, phone, notes } = entry.client
       return {
         input: { name, email: email ?? undefined, phone: phone ?? undefined, notes: notes ?? undefined },
         entity: 'client',
-        entity_id: idOf(entry.client),
+        entity_id: lookupId(entry.client),
       }
     }
     case 'softDeleteClient':
-      return { input: { id: idOf(entry.client) }, entity: 'client', entity_id: idOf(entry.client) }
+      return { input: { id: lookupId(entry.client) }, entity: 'client', entity_id: lookupId(entry.client) }
     case 'createAppointmentSeries': {
       const { series } = entry
       return {
         input: {
-          client_id: idOf(series.client),
-          service_id: idOf(series.service),
+          client_id: lookupId(series.client),
+          service_id: lookupId(series.service),
           weekly: series.days.map(({ weekday, time }) => ({ day: WEEKDAYS[weekday], time })),
           from: series.startsOn,
           end: { until: series.bookedUntil },
           mode: series.mode,
         },
         entity: 'series',
-        entity_id: idOf(series),
+        entity_id: lookupId(series),
       }
     }
     case 'updateAppointmentSeries':
       return {
-        input: { id: idOf(entry.series), ...entry.change },
+        input: { id: lookupId(entry.series), ...entry.change },
         entity: 'series',
-        entity_id: idOf(entry.series),
+        entity_id: lookupId(entry.series),
       }
     case 'createAppointment': {
       const { appointment } = entry
       return {
         input: {
-          client_id: idOf(appointment.client),
-          service_id: idOf(appointment.service),
+          client_id: lookupId(appointment.client),
+          service_id: lookupId(appointment.service),
           starts_at: appointment.starts,
           mode: appointment.mode,
         },
         entity: 'appointment',
-        entity_id: idOf(appointment),
+        entity_id: lookupId(appointment),
       }
     }
     case 'updateAppointment':
       return {
-        input: { id: idOf(entry.appointment), ...entry.change },
+        input: { id: lookupId(entry.appointment), ...entry.change },
         entity: 'appointment',
-        entity_id: idOf(entry.appointment),
+        entity_id: lookupId(entry.appointment),
       }
     case 'createPayment': {
       const { payment } = entry
       return {
         input: {
-          client_id: idOf(payment.client),
+          client_id: lookupId(payment.client),
           amount: payment.amount,
-          appointment_id: payment.appointment ? idOf(payment.appointment) : undefined,
+          appointment_id: payment.appointment ? lookupId(payment.appointment) : undefined,
           notes: payment.notes ?? undefined,
         },
         entity: 'payment',
-        entity_id: idOf(payment),
+        entity_id: lookupId(payment),
       }
     }
   }
@@ -992,7 +992,7 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
   await reserve('appointment_series', plan.series)
   await reserve('appointments', plan.appointments)
   await reserve('payments', plan.payments)
-  const idOf = (row: Row) => {
+  const lookupId = (row: Row) => {
     const id = ids.get(row)
     if (id === undefined) throw new Error('a planned row references one that was not planned')
     return id
@@ -1010,7 +1010,7 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
      SELECT r.id, $1, r.name, r.price, 'flat', r.minutes, ${local('r.created')}, ${local('r.updated')}
      FROM jsonb_to_recordset($2::jsonb)
        AS r(id int, name text, price int, minutes int, created timestamp, updated timestamp)`,
-    plan.services.map((row) => ({ ...row, id: idOf(row) })),
+    plan.services.map((row) => ({ ...row, id: lookupId(row) })),
   )
   await insert(
     'clients',
@@ -1020,7 +1020,7 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
      FROM jsonb_to_recordset($2::jsonb)
        AS r(id int, name text, email text, phone text, notes text,
          created timestamp, deleted timestamp)`,
-    plan.clients.map((row) => ({ ...row, id: idOf(row) })),
+    plan.clients.map((row) => ({ ...row, id: lookupId(row) })),
   )
   await insert(
     'appointment_series',
@@ -1032,9 +1032,9 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
        AS r(id int, client_id int, service_id int, mode text, minutes int, price int,
          starts_on date, ends_on date, created timestamp, updated timestamp)`,
     plan.series.map((row) => ({
-      id: idOf(row),
-      client_id: idOf(row.client),
-      service_id: idOf(row.service),
+      id: lookupId(row),
+      client_id: lookupId(row.client),
+      service_id: lookupId(row.service),
       mode: row.mode,
       minutes: row.minutes,
       price: row.price,
@@ -1049,7 +1049,7 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
     `INSERT INTO appointment_series_days (series_id, owner_id, weekday, starts_time)
      SELECT r.series_id, $1, r.weekday, r.time
      FROM jsonb_to_recordset($2::jsonb) AS r(series_id int, weekday int, time time)`,
-    plan.series.flatMap((row) => row.days.map((day) => ({ ...day, series_id: idOf(row) }))),
+    plan.series.flatMap((row) => row.days.map((day) => ({ ...day, series_id: lookupId(row) }))),
   )
   await insert(
     'appointments',
@@ -1064,15 +1064,15 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
          status text, price int, series_id int, series_date date, created timestamp,
          updated timestamp)`,
     plan.appointments.map((row) => ({
-      id: idOf(row),
-      client_id: idOf(row.client),
-      service_id: idOf(row.service),
+      id: lookupId(row),
+      client_id: lookupId(row.client),
+      service_id: lookupId(row.service),
       starts: row.starts,
       minutes: row.minutes,
       mode: row.mode,
       status: row.status,
       price: row.price,
-      series_id: row.series ? idOf(row.series) : null,
+      series_id: row.series ? lookupId(row.series) : null,
       series_date: row.seriesDate,
       created: row.created,
       updated: row.updated,
@@ -1087,9 +1087,9 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
      FROM jsonb_to_recordset($2::jsonb)
        AS r(id int, client_id int, appointment_id int, amount int, paid_at timestamp, notes text)`,
     plan.payments.map((row) => ({
-      id: idOf(row),
-      client_id: idOf(row.client),
-      appointment_id: row.appointment ? idOf(row.appointment) : null,
+      id: lookupId(row),
+      client_id: lookupId(row.client),
+      appointment_id: row.appointment ? lookupId(row.appointment) : null,
       amount: row.amount,
       paid_at: row.paidAt,
       notes: row.notes,
@@ -1102,7 +1102,7 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
      FROM jsonb_to_recordset($2::jsonb)
        AS r(n int, tool_name text, input jsonb, entity text, entity_id int, ts timestamp)
      ORDER BY r.n`,
-    plan.audit.map((entry, n) => ({ n, tool_name: entry.tool, ts: entry.ts, ...auditRow(entry, idOf) })),
+    plan.audit.map((entry, n) => ({ n, tool_name: entry.tool, ts: entry.ts, ...auditRow(entry, lookupId) })),
   )
 }
 

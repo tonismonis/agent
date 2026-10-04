@@ -16,8 +16,8 @@ import {
   services,
 } from '#/db/schema'
 import { readRefusal } from '#/lib/refusal'
-import { refusalOf } from '#/test/refusals'
-import { addDays, santiagoClockOf, santiagoDateOf, weekdayOf } from '#/lib/santiago-time'
+import { expectRefusal } from '#/test/refusals'
+import { addDays, toSantiagoClock, toSantiagoDate, getWeekday } from '#/lib/santiago-time'
 import {
   createAppointment,
   createAppointmentSeries,
@@ -73,7 +73,7 @@ beforeEach(async () => {
 })
 
 test('a failed write is audited with the refusal the model saw', async () => {
-  const refusal = await refusalOf(
+  const refusal = await expectRefusal(
     runOwnerTool(ownerId, () =>
       createAppointment.execute({
         client_id: 1,
@@ -92,7 +92,7 @@ test('a failed write is audited with the refusal the model saw', async () => {
 })
 
 test('a write Postgres rejects refuses by constraint, never with the SQL', async () => {
-  const refusal = await refusalOf(
+  const refusal = await expectRefusal(
     runOwnerTool(ownerId, () =>
       createPayment.execute({ client_id: 999999, amount: 1000 }),
     ),
@@ -114,7 +114,7 @@ test('an unplanned failure is internal to the model; the audit keeps its cause',
     createService.execute({ name: 'Sesión', price: 40000, unit: 'flat' }),
   )
 
-  const refusal = await refusalOf(
+  const refusal = await expectRefusal(
     runOwnerTool(ownerId, () =>
       createAppointment.execute({
         client_id: client.id,
@@ -212,7 +212,7 @@ test("a payment linked to another client's appointment is refused", async () => 
     }),
   )
 
-  const refusal = await refusalOf(
+  const refusal = await expectRefusal(
     runOwnerTool(ownerId, () =>
       createPayment.execute({
         client_id: pedro.id,
@@ -286,7 +286,7 @@ test('a series books all or nothing, lists every clash, and books the rest on re
     mode: 'in_person' as const,
   }
 
-  const refusal = await refusalOf(call(() => createAppointmentSeries.execute(input)))
+  const refusal = await expectRefusal(call(() => createAppointmentSeries.execute(input)))
 
   expect(refusal).toEqual({
     kind: 'conflict',
@@ -327,7 +327,7 @@ test('retrying the same series cannot book a class twice', async () => {
     call(() => createAppointmentSeries.execute(input)),
     call(() => createAppointmentSeries.execute(input)),
   ])
-  const again = await refusalOf(call(() => createAppointmentSeries.execute(input)))
+  const again = await expectRefusal(call(() => createAppointmentSeries.execute(input)))
 
   expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
   expect(again).toEqual(
@@ -342,14 +342,14 @@ test('retrying the same series cannot book a class twice', async () => {
 
 test('ending a series cancels only its future unpaid classes; undoing it reopens exactly those', async () => {
   const { pedro, service } = await piano()
-  const today = santiagoDateOf(new Date())
+  const today = toSantiagoDate(new Date())
   const tomorrow = addDays(today, 1)
   const skipped = addDays(tomorrow, 28)
   const series = await call(() =>
     createAppointmentSeries.execute({
       client_id: pedro.id,
       service_id: service.id,
-      weekly: [{ day: weekdayOf(tomorrow), time: '17:00' }],
+      weekly: [{ day: getWeekday(tomorrow), time: '17:00' }],
       from: addDays(today, -21),
       end: { until: addDays(today, 50) },
       mode: 'online',
@@ -404,7 +404,7 @@ test('a weekly 17:00 series stays 17:00 in Santiago across both clock changes', 
 
   const rows = await ownerRows()
   expect(rows).toHaveLength(33)
-  expect(new Set(rows.map((row) => santiagoClockOf(row.starts_at)))).toEqual(new Set(['17:00']))
+  expect(new Set(rows.map((row) => toSantiagoClock(row.starts_at)))).toEqual(new Set(['17:00']))
   expect(
     Object.fromEntries(
       ['2026-08-30', '2026-09-06', '2027-03-28', '2027-04-04'].map((date) => [

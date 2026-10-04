@@ -207,12 +207,12 @@ export function localInstant(date: LocalDate, time: Clock): Date | null {
   return wallInstant(dateWall(date) + clockMinutes(time) * minute)
 }
 
-export function santiagoDateOf(instant: Date): LocalDate {
+export function toSantiagoDate(instant: Date): LocalDate {
   // SAFETY: an ISO string's first ten characters are a real YYYY-MM-DD date.
   return new Date(santiagoWall(instant.getTime())).toISOString().slice(0, 10) as LocalDate
 }
 
-export function santiagoClockOf(instant: Date): Clock {
+export function toSantiagoClock(instant: Date): Clock {
   // SAFETY: characters 11–16 of an ISO string are a 24h HH:MM clock.
   return new Date(santiagoWall(instant.getTime())).toISOString().slice(11, 16) as Clock
 }
@@ -223,7 +223,7 @@ export function addDays(date: LocalDate, days: number): LocalDate {
   return new Date(dateWall(date) + days * day).toISOString().slice(0, 10) as LocalDate
 }
 
-export function weekdayOf(date: LocalDate): Weekday {
+export function getWeekday(date: LocalDate): Weekday {
   return weekdays[new Date(dateWall(date)).getUTCDay()]!
 }
 
@@ -236,8 +236,8 @@ export function resolveTime(value: z.output<typeof timeInput>) {
   if (zone) {
     const instant = new Date(wall - zoneOffset(zone))
     return {
-      date: santiagoDateOf(instant),
-      time: santiagoClockOf(instant),
+      date: toSantiagoDate(instant),
+      time: toSantiagoClock(instant),
       instant,
     }
   }
@@ -254,7 +254,7 @@ export function resolveTime(value: z.output<typeof timeInput>) {
 const santiagoDate = (instant: number) => Math.floor(santiagoWall(instant) / day)
 
 /** A bare date is the first instant of that Santiago day; otherwise toInstant. */
-export function startOf(value: z.output<typeof dateOrTimeInput>): Date {
+export function toStartInstant(value: z.output<typeof dateOrTimeInput>): Date {
   const { wall, hasClock } = parse(value)
   if (hasClock) return toInstant(value)
   const first = candidates(wall).find((each) => santiagoDate(each) === wall / day)
@@ -266,12 +266,12 @@ export function startOf(value: z.output<typeof dateOrTimeInput>): Date {
 export function rangeEnd(value: z.output<typeof rangeInput>): Date {
   const { wall, hasClock } = parse(value)
   if (hasClock) return toInstant(value)
-  return startOf(new Date(wall + day).toISOString().slice(0, 10))
+  return toStartInstant(new Date(wall + day).toISOString().slice(0, 10))
 }
 
 export function toRange(from?: string, to?: string): Range {
   return {
-    start: from ? startOf(from) : null,
+    start: from ? toStartInstant(from) : null,
     end: to ? rangeEnd(to) : null,
   }
 }

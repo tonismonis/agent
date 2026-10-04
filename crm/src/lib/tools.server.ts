@@ -37,15 +37,15 @@ import {
   addDays,
   clock,
   localDate,
-  weekdayOf,
+  getWeekday,
   weekdays,
   describeSantiagoTime,
   dateOrTimeInput,
   rangeInput,
   resolveTime,
-  santiagoClockOf,
-  santiagoDateOf,
-  startOf,
+  toSantiagoClock,
+  toSantiagoDate,
+  toStartInstant,
   timeInput,
   toRange,
   type Clock,
@@ -55,7 +55,7 @@ import {
   describeRule,
   describeWeekly,
   inWeekOrder,
-  occurrenceOf,
+  buildOccurrence,
   planSeries,
   type WeeklySlot,
 } from '#/lib/series'
@@ -311,7 +311,7 @@ export type CrmTool<TSchema extends z.ZodType, TOutput extends z.ZodType, TResul
   execute: (input: z.input<TSchema>) => Promise<TResult>
 }
 
-function asksOf<TInput>(guide: ToolGuide<TInput>) {
+function collectAsks<TInput>(guide: ToolGuide<TInput>) {
   return new Map<string, string>(
     Object.entries(guide.asks ?? {}).filter(
       (entry): entry is [string, string] => entry[1] !== undefined,
@@ -325,7 +325,7 @@ function parseInput<TSchema extends z.ZodType>(
   guide: ToolGuide<z.input<TSchema>>,
 ) {
   const parsed = schema.safeParse(raw)
-  if (!parsed.success) throw fromZod(parsed.error.issues, raw, asksOf(guide))
+  if (!parsed.success) throw fromZod(parsed.error.issues, raw, collectAsks(guide))
   return parsed.data
 }
 
@@ -1023,8 +1023,8 @@ export const updateAppointment = writeTool({
     const at = starts_at
       ? resolveTime(starts_at)
       : {
-          date: santiagoDateOf(existing.starts_at),
-          time: santiagoClockOf(existing.starts_at),
+          date: toSantiagoDate(existing.starts_at),
+          time: toSantiagoClock(existing.starts_at),
           instant: existing.starts_at,
         }
     const minutes =
@@ -1032,7 +1032,7 @@ export const updateAppointment = writeTool({
       (existing.ends_at.getTime() - existing.starts_at.getTime()) / 60_000
     return writeWithoutClashes(
       'move',
-      [{ date: at.date, time: at.time, span: spanOf(at.instant, minutes) }],
+      [{ date: at.date, time: at.time, span: buildSpan(at.instant, minutes) }],
       async ([placed]) => {
         if (moving && placed) {
           set.starts_at = placed.span.starts_at
@@ -1092,8 +1092,8 @@ export const restoreAppointment = writeTool({
       'restore',
       [
         {
-          date: santiagoDateOf(existing.starts_at),
-          time: santiagoClockOf(existing.starts_at),
+          date: toSantiagoDate(existing.starts_at),
+          time: toSantiagoClock(existing.starts_at),
           span: { starts_at: existing.starts_at, ends_at: existing.ends_at },
         },
       ],
@@ -1151,7 +1151,7 @@ function isPlaced<W extends Wanted>(wanted: W): wanted is W & { span: Span } {
   return wanted.span !== null
 }
 
-function spanOf(starts_at: Date | null, minutes: number): Span | null {
+function buildSpan(starts_at: Date | null, minutes: number): Span | null {
   if (!starts_at) return null
   return {
     starts_at,
@@ -1381,7 +1381,7 @@ export const createAppointment = writeTool({
         {
           date: at.date,
           time: at.time,
-          span: spanOf(at.instant, minutes),
+          span: buildSpan(at.instant, minutes),
           series: member,
         },
       ],
@@ -1755,7 +1755,7 @@ export const updateAppointmentSeries = writeTool({
         },
       ])
     const now = new Date()
-    const today = santiagoDateOf(now)
+    const today = toSantiagoDate(now)
     const from = input.from && input.from > today ? input.from : today
     const skipped = new Set(input.skip ?? [])
     const endsOn = localDate.parse(series.ends_on)
@@ -1814,7 +1814,7 @@ export const updateAppointmentSeries = writeTool({
 
     const kept = (member: Member): ClassChange => ({
       date: member.series_date,
-      time: santiagoClockOf(member.starts_at),
+      time: toSantiagoClock(member.starts_at),
       span: { starts_at: member.starts_at, ends_at: member.ends_at },
       member,
       reopen: false,
@@ -1822,9 +1822,9 @@ export const updateAppointmentSeries = writeTool({
     const moved = (member: Member): ClassChange =>
       retime && member.series_date >= from
         ? {
-            ...occurrenceOf(
+            ...buildOccurrence(
               member.series_date,
-              times.get(weekdayOf(member.series_date)) ?? santiagoClockOf(member.starts_at),
+              times.get(getWeekday(member.series_date)) ?? toSantiagoClock(member.starts_at),
               minutes,
             ),
             member,
@@ -2011,7 +2011,7 @@ export const restoreAppointmentSeries = writeTool({
       'restore_series',
       back.map(({ member, date }) => ({
         date,
-        time: santiagoClockOf(member.starts_at),
+        time: toSantiagoClock(member.starts_at),
         span: { starts_at: member.starts_at, ends_at: member.ends_at },
         series: { id, date },
       })),
@@ -2082,7 +2082,7 @@ export const createPayment = writeTool({
   run: async ({ paid_at, ...rest }) => {
     const [payment] = await db
       .insert(payments)
-      .values({ ...rest, paid_at: paid_at ? startOf(paid_at) : new Date() })
+      .values({ ...rest, paid_at: paid_at ? toStartInstant(paid_at) : new Date() })
       .returning()
     return withClientName(payment)
   },
@@ -2139,7 +2139,7 @@ export const updatePayment = writeTool({
       ...fields,
       updated_at: sql`now()`,
     }
-    if (paid_at) set.paid_at = startOf(paid_at)
+    if (paid_at) set.paid_at = toStartInstant(paid_at)
     const [payment] = await db
       .update(payments)
       .set(set)
