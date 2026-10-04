@@ -1,12 +1,6 @@
-import { parsePartialJSON } from '@tanstack/ai'
-
-import { isJsonObject, isJsonString, type JsonValue } from '#/lib/json'
-import {
-  inferWriteCallsFromCode,
-  summarizeWrites,
-  type WorkCall,
-  type WriteSummary,
-} from '#/lib/write-receipts'
+import type { JsonValue } from '#/lib/json'
+import { readReceipt, type ReceiptFact } from '#/lib/receipt-facts'
+import type { WorkCall } from '#/lib/write-receipts'
 import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
 
 type ToolCallPart = Extract<UIMessage['parts'][number], { type: 'tool-call' }>
@@ -21,26 +15,11 @@ export type Turn =
       thinking: string | null
       /** The caret sits on this turn. */
       streaming: boolean
-      /** Live calls, else calls inferred from the code, else none after a failed run. */
-      summary: WriteSummary
+      /** What the turn's executions saved, read from their persisted outputs. */
+      receipt: Array<ReceiptFact>
       /** Live calls only, and [] when work is hidden. */
       work: Array<WorkCall>
     }
-
-/** The code a call ran: its parsed input once complete, partial JSON while streaming. */
-function getTypeScript(part: ToolCallPart) {
-  // SAFETY: a tool input is the JSON the model called the tool with.
-  const input = (part.input ?? parsePartialJSON(part.arguments)) as JsonValue
-  const code = isJsonObject(input) ? input.typescriptCode : undefined
-  return isJsonString(code) ? code : part.arguments
-}
-
-/** execute_typescript reported failure, so the code's writes are unknown. */
-function executionFailed(part: ToolCallPart) {
-  // SAFETY: the tool's output is the JSON its server handler returned.
-  const output = part.output as JsonValue | undefined
-  return isJsonObject(output) && output.success === false
-}
 
 export function queuedText(queued: QueuedMessage) {
   // SAFETY: this page only ever sends plain text.
@@ -68,21 +47,17 @@ function toolCallPartsOf(message: UIMessage) {
 }
 
 /**
- * The calls one turn made. Live calls arrive as code-mode events; a turn
- * replayed from persistence has none, so the code it ran is read back instead.
+ * What one turn saved: the receipt each of its execute_typescript runs
+ * returned, in order. A run with no output yet has none.
  */
-function callsForMessage(
-  message: UIMessage,
-  callsByToolCall: Map<string, Array<WorkCall>>,
-): Array<WorkCall> {
-  return toolCallPartsOf(message).flatMap((part) => {
-    const live = callsByToolCall.get(part.id)
-    if (live && live.length > 0) return live
-    // Each tool call commits on its own, so a failed run may have written some
-    // of its calls; with no per-call record left, claim none rather than all.
-    if (executionFailed(part)) return []
-    return inferWriteCallsFromCode(getTypeScript(part), part.id)
-  })
+function receiptOf(message: UIMessage) {
+  return toolCallPartsOf(message)
+    .filter((part) => part.name === 'execute_typescript')
+    .flatMap((part) => {
+      // SAFETY: the tool's output is the JSON its server handler returned.
+      const output = part.output as JsonValue | undefined
+      return readReceipt(output)
+    })
 }
 
 /** The live calls one turn made, as code-mode events reported them. */
@@ -114,10 +89,7 @@ export function selectTurns(
   const turns = messages.flatMap((message): Array<Turn> => {
     const text = textOf(message)
     const thinkingText = thinkingOf(message)
-    const summary =
-      message.role === 'assistant'
-        ? summarizeWrites(callsForMessage(message, callsByToolCall))
-        : ({ kind: 'none' } satisfies WriteSummary)
+    const receipt = message.role === 'assistant' ? receiptOf(message) : []
     const streaming =
       streamingOnLastAssistant && message.id === lastAssistantId
     const thinking =
@@ -126,7 +98,7 @@ export function selectTurns(
 
     if (
       !text &&
-      summary.kind === 'none' &&
+      receipt.length === 0 &&
       !streaming &&
       thinking === null &&
       work.length === 0
@@ -141,7 +113,7 @@ export function selectTurns(
         text,
         thinking,
         streaming,
-        summary,
+        receipt,
         work,
       },
     ]

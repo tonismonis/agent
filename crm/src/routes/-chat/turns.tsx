@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react'
 import { TextButton } from '#/components/ui/text-button'
 import { queuedText, type Turn } from '#/routes/-chat/select-turns'
 import { marginClass, WorkMargin, WorkToggle } from '#/routes/-chat/work-log'
-import { WriteSummaryView } from '#/routes/-chat/write-summary'
+import { WriteReceipt } from '#/routes/-chat/write-summary'
 import type { QueuedMessage } from '@tanstack/ai-react'
 
 /** What the server says when a run ends early, as the Owner reads it. */
@@ -93,7 +93,7 @@ export function AssistantTurn({
             {turn.streaming && <Caret />}
           </div>
         )}
-        <WriteSummaryView summary={turn.summary} />
+        <WriteReceipt facts={turn.receipt} />
         {turn.work.length > 0 && (
           <WorkToggle
             calls={turn.work}

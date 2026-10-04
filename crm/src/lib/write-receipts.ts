@@ -1,26 +1,16 @@
 /**
- * Turns the tool activity of one agent turn into the receipt the chat shows
- * under the agent's sentence. Reads produce nothing — the work margin already
- * covers them. Writes produce either a short list of the fields that moved or,
- * once the turn crosses `cardThreshold` records, a card of the record as it now
- * reads.
- *
- * Everything here is defensive: the shapes come off a streamed tool call, so a
- * missing `args`, a string where an object was expected, or a tool this file
- * has never heard of must degrade to "render less", never throw.
+ * Renders the receipt facts of one agent turn as the lines the chat shows under
+ * the agent's sentence, in the Owner's Spanish. Reads leave no fact, so a
+ * read-only turn has no receipt; the work margin already covers reads.
  */
 
 import {
   isJsonBoolean,
   isJsonNumber,
-  isJsonObject,
   isJsonString,
-  type JsonObject,
   type JsonValue,
 } from '#/lib/json'
-
-/** At or above this many records written, the turn shows a card, not a list. */
-export const cardThreshold = 3
+import type { FieldChange, ReceiptFact, WriteAction } from '#/lib/receipt-facts'
 
 export type WorkCall = {
   /** Stable key for React and for pairing a call with its result. */
@@ -35,51 +25,49 @@ export type WorkCall = {
   /** The error is a refusal: the tool said no on purpose and saved nothing. */
   refused?: true
   durationMs?: number
-  /** Set when the call was recovered from code text, so values are unknown. */
-  inferred?: boolean
 }
 
 export type ReceiptLine = { label: string; value: string }
-
-export type WriteSummary =
-  | { kind: 'none' }
-  | { kind: 'receipt'; lines: Array<ReceiptLine> }
-  | { kind: 'card'; subject: string; count: number; rows: Array<ReceiptLine> }
 
 const writeVerbs = ['create', 'update', 'softdelete', 'soft_delete', 'restore']
 
 type Gender = 'm' | 'f'
 
-/** First match wins: a series tool's name also contains "appointment". */
-const entityByToken: Array<[string, string, Gender]> = [
-  ['series', 'Serie', 'f'],
-  ['client', 'Cliente', 'm'],
-  ['service', 'Servicio', 'm'],
-  ['appointment', 'Cita', 'f'],
-  ['payment', 'Pago', 'm'],
-  ['owner_profile', 'Perfil', 'm'],
-]
+type Entity = ReceiptFact['entity']
+
+/** Each record kind as the Owner names it, and the gender a participle agrees with. */
+const nouns = {
+  client: { one: 'Cliente', many: 'clientes', gender: 'm' },
+  service: { one: 'Servicio', many: 'servicios', gender: 'm' },
+  profile: { one: 'Perfil', many: 'perfiles', gender: 'm' },
+  appointment: { one: 'Cita', many: 'citas', gender: 'f' },
+  payment: { one: 'Pago', many: 'pagos', gender: 'm' },
+  series: { one: 'Serie', many: 'series', gender: 'f' },
+} satisfies Record<Entity, { one: string; many: string; gender: Gender }>
+
+const verbStems = {
+  created: 'cread',
+  updated: 'actualizad',
+  removed: 'eliminad',
+  restored: 'restaurad',
+} satisfies Record<WriteAction, string>
+
+/** A create as the Owner says it: an appointment is booked, a payment recorded. */
+const createdStems = new Map<Entity, string>([
+  ['appointment', 'agendad'],
+  ['payment', 'registrad'],
+])
 
 /** Column names as the Owner reads them; unknown columns fall back to humanizeField. */
 const fieldLabels = new Map([
-  ['name', 'Nombre'],
   ['email', 'Correo'],
   ['phone', 'Teléfono'],
   ['notes', 'Notas'],
   ['price', 'Precio'],
   ['unit', 'Unidad'],
   ['duration_minutes', 'Duración (min)'],
-  ['starts_at', 'Inicio'],
-  ['ends_at', 'Término'],
   ['mode', 'Modalidad'],
   ['status', 'Estado'],
-  ['amount', 'Monto'],
-  ['paid_at', 'Pagado el'],
-  ['profession', 'Profesión'],
-  ['from', 'Desde'],
-  ['until', 'Hasta'],
-  ['weekly', 'Días'],
-  ['skip', 'Sin'],
 ])
 
 /** Stored enum values as the Owner says them. */
@@ -94,39 +82,6 @@ const valueLabels = new Map([
 ])
 
 const santiago = 'America/Santiago'
-
-/** Fields that are plumbing, not something the owner asked to change. */
-const hiddenFields = new Set([
-  'id',
-  'owner_id',
-  'created_at',
-  'updated_at',
-  'deleted_at',
-])
-
-const maxReceiptLines = 8
-const maxCardRows = 6
-
-/**
- * Only used when recovering calls from code text, where a loose verb match
- * would happily count `setTimeout(` as a write. Live calls are matched by verb
- * instead, since their names come from the bound tools themselves.
- */
-const knownWriteTools = new Set(
-  [
-    'Client',
-    'Service',
-    'Appointment',
-    'Payment',
-    'AppointmentSeries',
-  ].flatMap((entity) => [
-    `create${entity}`,
-    `update${entity}`,
-    `softDelete${entity}`,
-    `restore${entity}`,
-  ]),
-)
-knownWriteTools.add('update_owner_profile')
 
 /**
  * Code mode exposes each CRM tool inside the sandbox as `external_<name>`, and
@@ -151,42 +106,20 @@ export function isWriteTool(name: string) {
   return writeVerbs.some((verb) => flat.startsWith(normalize(verb)))
 }
 
-export function toolVerb(name: string): 'created' | 'updated' | 'removed' | 'restored' {
-  const flat = normalize(name)
-  if (flat.startsWith('create')) return 'created'
-  if (flat.startsWith('softdelete')) return 'removed'
-  if (flat.startsWith('restore')) return 'restored'
-  return 'updated'
+/** The action as a participle agreeing with the record: `cita agendada`, `pagos eliminados`. */
+function participle(entity: Entity, action: WriteAction, plural: boolean) {
+  const stem =
+    (action === 'created' ? createdStems.get(entity) : undefined) ?? verbStems[action]
+  const ending = nouns[entity].gender === 'f' ? 'a' : 'o'
+  return `${stem}${ending}${plural ? 's' : ''}`
 }
 
-type Entity = { label: string; gender: Gender }
-
-const unknownEntity: Entity = { label: 'Registro', gender: 'm' }
-
-function entityOf(name: string): Entity {
-  const flat = name.toLowerCase()
-  for (const [token, label, gender] of entityByToken) {
-    if (flat.includes(token.replace('_', '')) || flat.includes(token))
-      return { label, gender }
-  }
-  return unknownEntity
-}
-
-export function toolEntity(name: string) {
-  return entityOf(name).label
-}
-
-const verbStems = {
-  created: 'cread',
-  updated: 'actualizad',
-  removed: 'eliminad',
-  restored: 'restaurad',
-} satisfies Record<ReturnType<typeof toolVerb>, string>
-
-/** The verb as a participle agreeing with the record it acted on: `cita creada`. */
-function participle(name: string) {
-  const stem = verbStems[toolVerb(name)]
-  return `${stem}${entityOf(name).gender === 'f' ? 'a' : 'o'}`
+/** `Cita agendada` for one record; `3 pagos` or `2 citas eliminadas` for several. */
+function headline(entity: Entity, action: WriteAction, count: number) {
+  const noun = nouns[entity]
+  if (count === 1) return `${noun.one} ${participle(entity, action, false)}`
+  if (action === 'created') return `${count} ${noun.many}`
+  return `${count} ${noun.many} ${participle(entity, action, true)}`
 }
 
 /** `mié 14 oct · 10:00`, always in the practice's timezone. */
@@ -233,48 +166,20 @@ function formatDate(value: string) {
 }
 
 /** `martes 17:00, jueves 18:00` */
-function formatWeekly(value: Array<JsonValue>) {
-  return value
-    .flatMap((slot) =>
-      isJsonObject(slot) && isJsonString(slot.day) && isJsonString(slot.time)
-        ? [`${weekdayNames.get(slot.day) ?? slot.day} ${slot.time}`]
-        : [],
-    )
+function formatWeekly(weekly: ReadonlyArray<{ day: string; time: string }>) {
+  return weekly
+    .map((slot) => `${weekdayNames.get(slot.day) ?? slot.day} ${slot.time}`)
     .join(', ')
 }
 
-/** The record case of a payload, or null — a call may carry anything at all. */
-function asRecord(value: JsonValue | undefined): JsonObject | null {
-  return isJsonObject(value) ? value : null
-}
-
-/** How many records one call touched: an array result means one per element. */
-function recordCount(call: WorkCall) {
-  if (call.error) return 0
-  if (Array.isArray(call.result)) return call.result.length || 1
-  return 1
-}
-
-function subjectOf(call: WorkCall) {
-  const result = asRecord(call.result)
-  const args = asRecord(call.args)
-  const name = result?.name ?? args?.name
-  if (isJsonString(name) && name.trim()) return name.trim()
-  return toolEntity(call.name)
-}
-
-export function formatFieldValue(
-  field: string,
-  value: JsonValue | undefined,
-): string {
-  if (value === null || value === undefined) return '—'
+function formatFieldValue(field: string, value: JsonValue): string {
+  if (value === null) return '—'
   if (isJsonBoolean(value)) return value ? 'sí' : 'no'
   if (isJsonNumber(value)) {
     if (/price|amount|rate|total/.test(field))
       return new Intl.NumberFormat('es-CL').format(value)
     return String(value)
   }
-  if (field === 'weekly' && Array.isArray(value)) return formatWeekly(value)
   if (isJsonString(value)) {
     if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return formatDate(value)
     if (field.endsWith('_at') || /^(starts|ends|paid)_/.test(field)) {
@@ -293,139 +198,94 @@ export function formatFieldValue(
   }
 }
 
-export function humanizeField(field: string) {
+function humanizeField(field: string) {
   const known = fieldLabels.get(field)
   if (known) return known
   const words = field.replace(/_/g, ' ').trim()
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
-function receiptLinesFor(call: WorkCall): Array<ReceiptLine> {
-  const subject = subjectOf(call)
-  const verb = toolVerb(call.name)
-  const done = participle(call.name)
-
-  if (call.inferred) {
-    const count = recordCount(call)
-    return [
-      {
-        label: `${toolEntity(call.name)} · ${done}`,
-        value: count > 1 ? `×${count}` : 'guardado',
-      },
-    ]
-  }
-
-  if (verb === 'removed' || verb === 'restored')
-    return [{ label: subject, value: done }]
-
-  const args = asRecord(call.args)
-  const moved = args
-    ? Object.entries(args).filter(
-        ([field, value]) =>
-          !hiddenFields.has(field) && value !== undefined && value !== null,
-      )
-    : []
-
-  if (verb === 'created') {
-    // A create moves every field at once; naming them all reads as noise, so
-    // the line names the record and the count instead.
-    const count = recordCount(call)
-    const result = asRecord(call.result)
-    const classes = result?.classes
-    const value =
-      Array.isArray(classes) && isJsonString(result?.client_name)
-        ? `${result.client_name} · ${classes.length} clases`
-        : count > 1
-          ? `×${count}`
-          : subject
-    return [{ label: `${toolEntity(call.name)} · ${done}`, value }]
-  }
-
-  if (moved.length === 0)
-    return [{ label: `${subject} · ${done}`, value: 'guardado' }]
-
-  return moved.map(([field, value]) => ({
-    label: `${subject} · ${humanizeField(field).toLowerCase()}`,
-    value: formatFieldValue(field, value),
-  }))
+/** `teléfono +56 9 2222 3333` */
+function changeText(change: FieldChange) {
+  return `${humanizeField(change.field).toLowerCase()} ${formatFieldValue(change.field, change.value)}`
 }
 
-function cardRowsFor(calls: Array<WorkCall>): Array<ReceiptLine> {
-  // The card shows the primary subject as it now reads: the last write that
-  // came back with a whole record wins.
-  for (let index = calls.length - 1; index >= 0; index -= 1) {
-    const raw = calls[index]?.result
-    const record =
-      asRecord(raw) ?? (Array.isArray(raw) ? asRecord(raw.at(-1)) : null)
-    if (!record) continue
-    const rows = Object.entries(record)
-      .filter(
-        ([field, value]) =>
-          !hiddenFields.has(field) &&
-          !field.endsWith('_id') &&
-          value !== null &&
-          value !== undefined &&
-          value !== '',
-      )
-      .slice(0, maxCardRows)
-      .map(([field, value]) => ({
-        label: humanizeField(field),
-        value: formatFieldValue(field, value),
-      }))
-    if (rows.length > 0) return rows
+function joined(parts: ReadonlyArray<string | null>) {
+  return parts.filter((part) => part !== null && part !== '').join(' · ')
+}
+
+type SeriesFact = Extract<ReceiptFact, { entity: 'series' }>
+
+/** A new end that cancelled classes ends the series; one that booked more extends it. */
+function seriesHeadline(fact: SeriesFact) {
+  if (fact.action === 'updated' && fact.until !== null) {
+    if (fact.cancelled > 0) return 'Serie terminada'
+    if (fact.added > 0) return 'Serie extendida'
   }
-  return []
+  return headline('series', fact.action, 1)
 }
 
-function cardSubject(calls: Array<WorkCall>) {
-  const named = calls.find((call) => subjectOf(call) !== toolEntity(call.name))
-  return named ? subjectOf(named) : toolEntity(calls[0]?.name ?? '')
+function seriesLines(fact: SeriesFact): Array<ReceiptLine> {
+  const classes =
+    fact.classes === null
+      ? null
+      : `${fact.classes} ${fact.classes === 1 ? 'clase' : 'clases'}`
+  const counts: Array<[string, number]> = [
+    ['Clases canceladas', fact.cancelled],
+    ['Clases nuevas', fact.added],
+    ['Clases borradas', fact.removed],
+  ]
+  return [
+    {
+      label: seriesHeadline(fact),
+      value: joined([
+        fact.client,
+        fact.until === null ? formatWeekly(fact.weekly) : `hasta ${formatDate(fact.until)}`,
+        classes,
+        ...fact.changes.map(changeText),
+      ]),
+    },
+    ...counts
+      .filter(([, count]) => count > 0)
+      .map(([label, count]) => ({ label, value: String(count) })),
+  ]
 }
 
-/**
- * The whole receipt decision for one agent turn. `threshold` is a parameter so
- * the cutoff can be tuned in one place without either renderer knowing about it.
- */
-export function summarizeWrites(
-  calls: Array<WorkCall>,
-  threshold: number = cardThreshold,
-): WriteSummary {
-  const writes = calls.filter((call) => isWriteTool(call.name) && !call.error)
-  if (writes.length === 0) return { kind: 'none' }
-
-  const count = writes.reduce((total, call) => total + recordCount(call), 0)
-  if (count === 0) return { kind: 'none' }
-
-  const rows = count >= threshold ? cardRowsFor(writes) : []
-  if (rows.length > 0)
-    return { kind: 'card', subject: cardSubject(writes), count, rows }
-
-  const lines = writes.flatMap(receiptLinesFor).slice(0, maxReceiptLines)
-  return lines.length > 0 ? { kind: 'receipt', lines } : { kind: 'none' }
-}
-
-/**
- * Recovers write calls from the code the agent ran, for turns replayed from
- * persistence where the live per-call events are gone. Names only — the args
- * and results were never persisted — so these render as counted lines.
- */
-export function inferWriteCallsFromCode(
-  code: string,
-  toolCallId: string,
-): Array<WorkCall> {
-  const counts = new Map<string, number>()
-  const pattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g
-  let match = pattern.exec(code)
-  while (match) {
-    const name = crmToolName(match[1]!)
-    if (knownWriteTools.has(name)) counts.set(name, (counts.get(name) ?? 0) + 1)
-    match = pattern.exec(code)
+function linesOf(fact: ReceiptFact): Array<ReceiptLine> {
+  switch (fact.entity) {
+    case 'client':
+    case 'service':
+    case 'profile':
+      return [
+        {
+          label: headline(fact.entity, fact.action, fact.count),
+          value: joined([fact.subject, ...fact.changes.map(changeText)]),
+        },
+      ]
+    case 'appointment':
+      return [
+        {
+          label: headline(fact.entity, fact.action, fact.count),
+          value: joined([
+            fact.client,
+            fact.starts_at === null ? null : formatFieldValue('starts_at', fact.starts_at),
+            ...fact.changes.map(changeText),
+          ]),
+        },
+      ]
+    case 'payment':
+      return [
+        {
+          label: headline(fact.entity, fact.action, fact.count),
+          value: joined([fact.client, formatFieldValue('amount', fact.amount)]),
+        },
+      ]
+    case 'series':
+      return seriesLines(fact)
   }
-  return [...counts].map(([name, count]) => ({
-    key: `${toolCallId}:${name}`,
-    toolCallId,
-    name,
-    inferred: true,
-    result: Array.from({ length: count }, () => null),
-  }))
+}
+
+/** The receipt under one agent turn, one line per fact plus a series' class counts. */
+export function receiptLines(facts: ReadonlyArray<ReceiptFact>): Array<ReceiptLine> {
+  return facts.flatMap(linesOf)
 }
