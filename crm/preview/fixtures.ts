@@ -4,6 +4,7 @@
  */
 import type { ChatViewProps } from '#/routes/-chat/chat-view'
 import type { JsonValue } from '#/lib/json'
+import type { ReceiptFact } from '#/lib/receipt-facts'
 import type { WorkCall } from '#/lib/write-receipts'
 import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
 
@@ -25,7 +26,12 @@ function user(text: string): UIMessage {
   return { id: id('user'), role: 'user', parts: [{ type: 'text', content: text }] }
 }
 
-function assistant(text: string, toolCallId?: string, code = ''): UIMessage {
+function assistant(
+  text: string,
+  toolCallId?: string,
+  code = '',
+  receipt: Array<ReceiptFact> = [],
+): UIMessage {
   return {
     id: id('assistant'),
     role: 'assistant',
@@ -39,7 +45,12 @@ function assistant(text: string, toolCallId?: string, code = ''): UIMessage {
               arguments: JSON.stringify({ typescriptCode: code }),
               input: { typescriptCode: code },
               state: 'complete' as const,
-              output: { success: true, result: null, logs: [] },
+              output: {
+                success: true,
+                result: null,
+                logs: [],
+                ...(receipt.length > 0 && { receipt }),
+              },
             },
           ]
         : []),
@@ -72,7 +83,7 @@ const idle = {
 
 const rosa = { id: 12, name: 'Rosa Valdés', phone: '+56 9 4412 8890', email: null }
 
-/** Three turns: a lookup, a single-field update (receipt), a booking run (card). */
+/** Three turns: a lookup, a single-field update, a run of three bookings. */
 function conversation() {
   const messages = [
     user('¿Qué tengo mañana?'),
@@ -86,6 +97,15 @@ function conversation() {
       'Listo, actualicé el teléfono de Rosa.',
       'call_phone',
       'const [c] = await external_findClients({ query: "Rosa" })\nreturn await external_updateClient({ id: c.id, phone: "+56 9 4412 8890" })',
+      [
+        {
+          entity: 'client',
+          action: 'updated',
+          subject: rosa.name,
+          count: 1,
+          changes: [{ field: 'phone', value: rosa.phone }],
+        },
+      ],
     ),
     user(
       'Agenda a Rosa los próximos tres martes a las 10, sesión individual, online',
@@ -94,6 +114,16 @@ function conversation() {
       'Agendé las tres sesiones de Rosa: 30 de septiembre, 7 y 14 de octubre, a las 10:00, online.',
       'call_book',
       'for (const d of dates) await external_createAppointment({ client_id: 12, service_id: 3, starts_at: d, mode: "online" })',
+      [
+        {
+          entity: 'appointment',
+          action: 'created',
+          client: rosa.name,
+          count: 3,
+          starts_at: null,
+          changes: [],
+        },
+      ],
     ),
   ]
   const booking = (date: string) =>

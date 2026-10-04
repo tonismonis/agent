@@ -68,8 +68,9 @@ function Home() {
           ...(event.refused && { refused: true as const }),
         })
       } else {
-        // Pair the result with the most recent unfinished call of that name.
-        const index = calls.findLastIndex(
+        // Calls of one name finish roughly in the order they started, so the
+        // earliest unfinished one is the likeliest owner of this result.
+        const index = calls.findIndex(
           (call) =>
             call.name === event.name &&
             call.result === undefined &&
