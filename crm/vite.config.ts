@@ -16,11 +16,6 @@ const config = defineConfig({
     tanstackStart(),
     viteReact(),
   ],
-  test: {
-    setupFiles: ['./src/test/setup.ts'],
-    // Database integration tests share one local schema.
-    fileParallelism: false,
-  },
 })
 
 export default config
