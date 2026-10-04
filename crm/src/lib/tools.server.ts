@@ -821,7 +821,7 @@ export const softDeleteClient = writeTool({
   name: 'softDeleteClient',
   entity: 'client',
   description:
-    'Soft delete a client. Refused while the client has scheduled appointments from now on.',
+    'Soft delete a client. Refused while the client has scheduled appointments from now on: end each of their series with updateAppointmentSeries until, cancel the single appointments with updateAppointment, then delete.',
   guide: {
     does: 'Borra un cliente. Se puede recuperar.',
     wont: 'No borra a alguien con citas agendadas desde hoy: primero hay que cancelarlas o borrarlas.',
