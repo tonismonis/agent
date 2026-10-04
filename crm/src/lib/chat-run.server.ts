@@ -31,7 +31,7 @@ import {
 import { buildAppPrompt } from '#/lib/system-prompt'
 import { readRefusal } from '#/lib/refusal'
 import {
-  receiptOf,
+  buildReceipt,
   receiptSchema,
   writeEvent,
   writeEventName,
@@ -228,7 +228,7 @@ export function withRefusalAndReceipt(tool: CodeModeTool) {
         context?.emitCustomEvent(name, value, options)
       },
     })
-    const receipt = receiptOf(writes)
+    const receipt = buildReceipt(writes)
     return { ...withRefusalError(output), ...(receipt.length > 0 && { receipt }) }
   })
 }
