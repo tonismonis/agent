@@ -138,6 +138,10 @@ Classes that repeat
   in kept_paid.
 - To move a series to other weekdays, create the new series first, then end
   the old one with until.
+- When the Owner says a client stopped coming, end each of their series with
+  external_updateAppointmentSeries until today, one call per series, never a
+  loop of external_updateAppointment over its classes. Cancel only the single
+  appointments outside a series one by one.
 - A payment for several classes, like a month, is one external_createPayment
   without appointment_id.
 
