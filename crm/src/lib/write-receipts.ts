@@ -14,6 +14,8 @@ import {
   buildFactKey,
   type FieldChange,
   type ReceiptFact,
+  type RecordKind,
+  type RefusalReason,
   type WriteAction,
 } from '#/lib/receipt-facts'
 
@@ -32,14 +34,15 @@ export type WorkCall = {
   durationMs?: number
 }
 
-type LineText = { label: string; value: string }
+/** `refused` lines read muted: nothing was saved. */
+type LineText = { label: string; value: string; refused?: true }
 export type ReceiptLine = LineText & { key: string }
 
 const writeVerbs = ['create', 'update', 'softdelete', 'soft_delete', 'restore']
 
 type Gender = 'm' | 'f'
 
-type Entity = ReceiptFact['entity']
+type Entity = RecordKind
 
 /** Each record kind as the Owner names it, and the gender a participle agrees with. */
 const nouns = {
@@ -139,6 +142,20 @@ function statusHeadline(changes: ReadonlyArray<FieldChange>, count: number) {
   const words = statusHeadlines.get(only.value)
   if (!words) return null
   return count === 1 ? words[0] : `${count} ${words[1]}`
+}
+
+/** Why a refused write was not saved, in a few words. */
+const refusalReasons = {
+  conflict: 'horario no disponible',
+  blocked: 'tiene citas agendadas',
+  internal: 'error del sistema',
+} satisfies Record<RefusalReason, string>
+
+/** `Cita no agendada`, `2 pagos no registrados`. */
+function refusedHeadline(entity: Entity, action: WriteAction, count: number) {
+  const noun = nouns[entity]
+  if (count === 1) return `${noun.one} no ${participle(entity, action, false)}`
+  return `${count} ${noun.many} no ${participle(entity, action, true)}`
 }
 
 /** `Cita agendada` for one record; `3 pagos` or `2 citas eliminadas` for several. */
@@ -280,6 +297,14 @@ function seriesLines(fact: SeriesFact): Array<LineText> {
 
 function factToLines(fact: ReceiptFact): Array<LineText> {
   switch (fact.entity) {
+    case 'refused':
+      return [
+        {
+          label: refusedHeadline(fact.record, fact.action, fact.count),
+          value: joined([fact.subject, refusalReasons[fact.reason]]),
+          refused: true,
+        },
+      ]
     case 'client':
     case 'service':
     case 'profile':

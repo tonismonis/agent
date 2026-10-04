@@ -59,7 +59,8 @@ import {
   planSeries,
   type WeeklySlot,
 } from '#/lib/series'
-import type { WriteToolName } from '#/lib/receipt-facts'
+import type { JsonValue } from '#/lib/json'
+import type { RecordKind, WriteAction, WriteToolName } from '#/lib/receipt-facts'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 
 type AuditEntity =
@@ -901,6 +902,64 @@ async function findPayment({ id }: { id: number }) {
 async function findService({ id }: { id: number }) {
   const [service] = await db.select().from(services).where(eq(services.id, id))
   return service
+}
+
+const subjectArgs = z.object({
+  id: z.number().optional(),
+  client_id: z.number().optional(),
+  name: z.string().optional(),
+})
+
+async function findClientName(id: number) {
+  const [client] = await db.select({ name: clients.name }).from(clients).where(eq(clients.id, id))
+  return client?.name ?? null
+}
+
+/** The client a record belongs to, by the record's own id. */
+async function findOwnerClientId(record: 'appointment' | 'series' | 'payment', id: number) {
+  const table = { appointment: appointments, series: appointmentSeries, payment: payments }[record]
+  const [row] = await db
+    .select({ client_id: table.client_id })
+    .from(table)
+    .where(eq(table.id, id))
+  return row?.client_id ?? null
+}
+
+/**
+ * Whose record a refused write was about, read from its args, so its receipt
+ * line can name them. Null when the args do not say.
+ */
+export async function findWriteSubject(
+  record: RecordKind,
+  action: WriteAction,
+  raw: JsonValue,
+): Promise<string | null> {
+  const args = subjectArgs.safeParse(raw)
+  if (!args.success) return null
+  const { id, client_id, name } = args.data
+  switch (record) {
+    case 'profile':
+      return null
+    case 'client':
+      if (action === 'created') return name ?? null
+      return id === undefined ? null : findClientName(id)
+    case 'service': {
+      if (action === 'created') return name ?? null
+      if (id === undefined) return null
+      const [service] = await db
+        .select({ name: services.name })
+        .from(services)
+        .where(eq(services.id, id))
+      return service?.name ?? null
+    }
+    case 'appointment':
+    case 'series':
+    case 'payment': {
+      const owner =
+        client_id ?? (id === undefined ? null : await findOwnerClientId(record, id))
+      return owner === null ? null : findClientName(owner)
+    }
+  }
 }
 
 async function findClient({ id }: { id: number }) {

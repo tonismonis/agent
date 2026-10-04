@@ -4,7 +4,8 @@ import type { ReceiptFact } from '#/lib/receipt-facts'
 /**
  * What the turn saved, one line per fact, under a 2px rule. While a write is
  * in flight the header shimmers as "Guardando"; each line opens in as its
- * write saves, and a growing count updates its line in place.
+ * write saves, and a growing count updates its line in place. Refused writes
+ * read muted, and a turn that saved nothing says so.
  */
 export function WriteReceipt({
   facts,
@@ -15,6 +16,7 @@ export function WriteReceipt({
 }) {
   const lines = receiptLines(facts)
   if (lines.length === 0 && !saving) return null
+  const nothingSaved = lines.every((line) => line.refused)
   return (
     <div className="flex max-w-[86%] flex-col border-l-2 border-ink py-0.5 pl-4 font-meta text-[11.5px] leading-[1.5]">
       <div
@@ -24,7 +26,7 @@ export function WriteReceipt({
             : 'font-meta text-meta uppercase text-ink-mute'
         }
       >
-        {saving ? 'Guardando' : 'Guardado'}
+        {saving ? 'Guardando' : nothingSaved ? 'Sin guardar' : 'Guardado'}
       </div>
       {lines.map((line) => (
         <div
@@ -33,8 +35,10 @@ export function WriteReceipt({
         >
           <div className="min-h-0 overflow-hidden">
             <div className="flex justify-between gap-5 pt-[9px]">
-              <span>{line.label}</span>
-              <span className="text-right text-ink-dim">{line.value}</span>
+              <span className={line.refused && 'text-ink-mute'}>{line.label}</span>
+              <span className={line.refused ? 'text-right text-ink-mute' : 'text-right text-ink-dim'}>
+                {line.value}
+              </span>
             </div>
           </div>
         </div>
