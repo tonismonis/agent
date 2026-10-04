@@ -87,13 +87,13 @@ export function AssistantTurn({
             {turn.thinking}
           </div>
         )}
+        <WriteReceipt facts={turn.receipt.facts} saving={turn.receipt.saving} />
         {(turn.text || turn.streaming) && (
           <div className="max-w-[86%] whitespace-pre-wrap">
             {turn.text}
             {turn.streaming && <Caret />}
           </div>
         )}
-        <WriteReceipt facts={turn.receipt} />
         {turn.work.length > 0 && (
           <WorkToggle
             calls={turn.work}

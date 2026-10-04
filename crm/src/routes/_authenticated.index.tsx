@@ -6,6 +6,7 @@ import { loadChatPage, readTranscript } from '#/lib/chat-page.functions'
 import { getDailyThreadId, millisecondsUntilThreadRotation } from '#/lib/chat-thread'
 import { readCodeModeEvent } from '#/lib/code-mode-events'
 import type { JsonValue } from '#/lib/json'
+import { writeEvent, writeEventName, type Write } from '#/lib/receipt-facts'
 import type { WorkCall } from '#/lib/write-receipts'
 import { ChatView } from '#/routes/-chat/chat-view'
 import { queuedText } from '#/routes/-chat/select-turns'
@@ -30,6 +31,9 @@ function Home() {
   const [callsByToolCall, setCallsByToolCall] = useState<
     Map<string, Array<WorkCall>>
   >(new Map())
+  const [writesByToolCall, setWritesByToolCall] = useState<
+    Map<string, Array<Write>>
+  >(new Map())
   const callKey = useRef(0)
 
   useEffect(() => {
@@ -43,7 +47,19 @@ function Home() {
     NonNullable<UseChatOptions['onCustomEvent']>
   >((type, data, context) => {
     const toolCallId = context.toolCallId
-    if (!toolCallId || !type.startsWith('code_mode:')) return
+    if (!toolCallId) return
+    if (type === writeEventName) {
+      const write = writeEvent.safeParse(data)
+      if (!write.success) return
+      setWritesByToolCall((current) =>
+        new Map(current).set(toolCallId, [
+          ...(current.get(toolCallId) ?? []),
+          write.data,
+        ]),
+      )
+      return
+    }
+    if (!type.startsWith('code_mode:')) return
     // SAFETY: a custom event carries the JSON the tool serialized onto the stream.
     const event = readCodeModeEvent(type, data as JsonValue)
     if (!event) return
@@ -149,6 +165,7 @@ function Home() {
   return (
     <ChatView
       callsByToolCall={callsByToolCall}
+      writesByToolCall={writesByToolCall}
       connectionLabel={connectionLabel}
       error={error}
       input={input}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { PaperPicker } from '#/components/paper-picker'
 import { TextButton } from '#/components/ui/text-button'
+import type { Write } from '#/lib/receipt-facts'
 import type { WorkCall } from '#/lib/write-receipts'
 import { Composer } from '#/routes/-chat/composer'
 import { EmptyState } from '#/routes/-chat/empty-state'
@@ -53,6 +54,8 @@ export type ChatViewProps = {
   messages: Array<UIMessage>
   /** Live per-call records, keyed by the code-mode tool call that made them. */
   callsByToolCall: Map<string, Array<WorkCall>>
+  /** Live saved writes, keyed the same way, until each run's receipt is saved. */
+  writesByToolCall: Map<string, Array<Write>>
   isLoading: boolean
   error: Error | undefined
   queue: ReadonlyArray<QueuedMessage>
@@ -70,6 +73,7 @@ export type ChatViewProps = {
 export function ChatView({
   messages,
   callsByToolCall,
+  writesByToolCall,
   isLoading,
   error,
   queue,
@@ -97,7 +101,7 @@ export function ChatView({
   // to reread unpins until they come back down.
   useEffect(() => {
     if (messagesPinned.current) messageEnd.current?.scrollIntoView({ block: 'end' })
-  }, [messages, callsByToolCall, queue.length, error, isLoading])
+  }, [messages, callsByToolCall, writesByToolCall, queue.length, error, isLoading])
 
   function toggleWork() {
     const next = !showWork
@@ -122,6 +126,7 @@ export function ChatView({
   const { turns, waiting } = selectTurns(
     messages,
     callsByToolCall,
+    writesByToolCall,
     isLoading,
     showWork,
   )

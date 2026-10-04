@@ -1,5 +1,11 @@
 import type { JsonValue } from '#/lib/json'
-import { groupFacts, parseReceipt, type ReceiptFact } from '#/lib/receipt-facts'
+import {
+  buildReceipt,
+  groupFacts,
+  parseReceipt,
+  type ReceiptFact,
+  type Write,
+} from '#/lib/receipt-facts'
 import type { WorkCall } from '#/lib/write-receipts'
 import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
 
@@ -15,8 +21,12 @@ export type Turn =
       thinking: string | null
       /** The caret sits on this turn. */
       streaming: boolean
-      /** What the turn's executions saved, read from their persisted outputs. */
-      receipt: Array<ReceiptFact>
+      receipt: {
+        /** Saved facts once a run finishes; until then, built from its live writes. */
+        facts: Array<ReceiptFact>
+        /** The streaming turn's code is about to save, or saving now. */
+        saving: boolean
+      }
       /** Live calls only, and [] when work is hidden. */
       work: Array<WorkCall>
     }
@@ -47,18 +57,38 @@ function findToolCallParts(message: UIMessage) {
 }
 
 /**
- * What one turn saved: the receipts of its execute_typescript runs, grouped
- * across runs. A run with no output yet has none.
+ * What one turn saved, grouped across its execute_typescript runs. A finished
+ * run reads the receipt saved on its output; a running one builds the same
+ * receipt from the writes it has reported so far.
  */
-function readMessageReceipt(message: UIMessage) {
+function readMessageReceipt(
+  message: UIMessage,
+  writesByToolCall: Map<string, Array<Write>>,
+) {
   return groupFacts(
     findToolCallParts(message)
       .filter((part) => part.name === 'execute_typescript')
       .flatMap((part) => {
+        if (part.output === undefined)
+          return buildReceipt(writesByToolCall.get(part.id) ?? [])
         // SAFETY: the tool's output is the JSON its server handler returned.
-        const output = part.output as JsonValue | undefined
-        return parseReceipt(output)
+        return parseReceipt(part.output as JsonValue)
       }),
+  )
+}
+
+const writeCall = /\bexternal_(create|update|softDelete|restore)\w*\s*\(/
+
+/**
+ * The model is still writing or running code that saves something. The writes
+ * themselves take milliseconds; the wait the Owner sees is the model writing
+ * the code, so this reads the code as it streams.
+ */
+function isAboutToSave(part: ToolCallPart) {
+  return (
+    part.name === 'execute_typescript' &&
+    part.output === undefined &&
+    writeCall.test(part.arguments)
   )
 }
 
@@ -97,6 +127,7 @@ function foldAssistantSteps(messages: Array<UIMessage>) {
 export function selectTurns(
   messages: Array<UIMessage>,
   callsByToolCall: Map<string, Array<WorkCall>>,
+  writesByToolCall: Map<string, Array<Write>>,
   isLoading: boolean,
   showWork: boolean,
 ) {
@@ -109,16 +140,23 @@ export function selectTurns(
   const turns = foldAssistantSteps(messages).flatMap((message): Array<Turn> => {
     const text = readMessageText(message)
     const thinkingText = readMessageThinking(message)
-    const receipt = message.role === 'assistant' ? readMessageReceipt(message) : []
     const streaming =
       streamingOnLastAssistant && message.id === lastAssistantId
+    const receipt = {
+      facts:
+        message.role === 'assistant'
+          ? readMessageReceipt(message, writesByToolCall)
+          : [],
+      saving: streaming && findToolCallParts(message).some(isAboutToSave),
+    }
     const thinking =
       thinkingText && (streaming || !text) ? thinkingText : null
     const work = showWork ? findLiveCalls(message, callsByToolCall) : []
 
     if (
       !text &&
-      receipt.length === 0 &&
+      receipt.facts.length === 0 &&
+      !receipt.saving &&
       !streaming &&
       thinking === null &&
       work.length === 0
