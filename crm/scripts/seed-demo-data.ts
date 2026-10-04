@@ -3,7 +3,7 @@
  * practice in Santiago, dated relative to today, so a demo can ask about
  * tomorrow's agenda, debts and past revenue. Other owners are untouched.
  *
- *   pnpm demo:seed <owner-email>
+ *   pnpm demo:seed [owner-email]   (defaults to DEMO_OWNER_EMAIL)
  */
 import type pg from 'pg'
 
@@ -1152,9 +1152,9 @@ async function writePlan(admin: pg.Client, ownerId: string, plan: DemoPlan) {
   )
 }
 
-const email = process.argv[2]
+const email = process.argv[2] ?? process.env.DEMO_OWNER_EMAIL
 if (!email) {
-  console.error('usage: pnpm demo:seed <owner-email>')
+  console.error('usage: pnpm demo:seed [owner-email], or set DEMO_OWNER_EMAIL')
   process.exit(1)
 }
 
