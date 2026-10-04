@@ -1,5 +1,5 @@
 import type { JsonValue } from '#/lib/json'
-import { groupFacts, readReceipt, type ReceiptFact } from '#/lib/receipt-facts'
+import { groupFacts, parseReceipt, type ReceiptFact } from '#/lib/receipt-facts'
 import type { WorkCall } from '#/lib/write-receipts'
 import type { QueuedMessage, UIMessage } from '@tanstack/ai-react'
 
@@ -26,21 +26,21 @@ export function queuedText(queued: QueuedMessage) {
   return queued.content as string
 }
 
-function textOf(message: UIMessage) {
+function readMessageText(message: UIMessage) {
   return message.parts
     .filter((part) => part.type === 'text')
     .map((part) => part.content)
     .join('')
 }
 
-function thinkingOf(message: UIMessage) {
+function readMessageThinking(message: UIMessage) {
   return message.parts
     .filter((part) => part.type === 'thinking')
     .map((part) => part.content)
     .join('')
 }
 
-function toolCallPartsOf(message: UIMessage) {
+function findToolCallParts(message: UIMessage) {
   return message.parts.filter(
     (part): part is ToolCallPart => part.type === 'tool-call',
   )
@@ -50,24 +50,24 @@ function toolCallPartsOf(message: UIMessage) {
  * What one turn saved: the receipts of its execute_typescript runs, grouped
  * across runs. A run with no output yet has none.
  */
-function receiptOf(message: UIMessage) {
+function readMessageReceipt(message: UIMessage) {
   return groupFacts(
-    toolCallPartsOf(message)
+    findToolCallParts(message)
       .filter((part) => part.name === 'execute_typescript')
       .flatMap((part) => {
         // SAFETY: the tool's output is the JSON its server handler returned.
         const output = part.output as JsonValue | undefined
-        return readReceipt(output)
+        return parseReceipt(output)
       }),
   )
 }
 
 /** The live calls one turn made, as code-mode events reported them. */
-function liveCallsOf(
+function findLiveCalls(
   message: UIMessage,
   callsByToolCall: Map<string, Array<WorkCall>>,
 ) {
-  return toolCallPartsOf(message).flatMap(
+  return findToolCallParts(message).flatMap(
     (part) => callsByToolCall.get(part.id) ?? [],
   )
 }
@@ -107,14 +107,14 @@ export function selectTurns(
     isLoading && messages.at(-1)?.role === 'assistant'
 
   const turns = foldAssistantSteps(messages).flatMap((message): Array<Turn> => {
-    const text = textOf(message)
-    const thinkingText = thinkingOf(message)
-    const receipt = message.role === 'assistant' ? receiptOf(message) : []
+    const text = readMessageText(message)
+    const thinkingText = readMessageThinking(message)
+    const receipt = message.role === 'assistant' ? readMessageReceipt(message) : []
     const streaming =
       streamingOnLastAssistant && message.id === lastAssistantId
     const thinking =
       thinkingText && (streaming || !text) ? thinkingText : null
-    const work = showWork ? liveCallsOf(message, callsByToolCall) : []
+    const work = showWork ? findLiveCalls(message, callsByToolCall) : []
 
     if (
       !text &&

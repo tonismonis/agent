@@ -77,7 +77,7 @@ export type Write = z.infer<typeof writeEvent>
 type FactReader = (write: { args: JsonObject; result: JsonValue }) => ReceiptFact | null
 
 /** The fields an update set, minus the ones the fact already shows. */
-function changesOf(args: JsonObject, shown: ReadonlyArray<string>): Array<FieldChange> {
+function listChanges(args: JsonObject, shown: ReadonlyArray<string>): Array<FieldChange> {
   return Object.entries(args)
     .filter(([field, value]) => field !== 'id' && !shown.includes(field) && value !== null)
     .map(([field, value]) => ({ field, value }))
@@ -89,7 +89,7 @@ function named(entity: 'client' | 'service' | 'profile', action: WriteAction): F
   return ({ args, result }) => {
     const row = namedRow.safeParse(result)
     if (!row.success) return null
-    const changes = action === 'updated' ? changesOf(args, ['name']) : []
+    const changes = action === 'updated' ? listChanges(args, ['name']) : []
     return { entity, action, subject: row.data.name, count: 1, changes }
   }
 }
@@ -103,7 +103,7 @@ function appointment(action: WriteAction): FactReader {
     // A move keeps the instant the result reports, not the wall time the args named.
     const changes =
       action === 'updated'
-        ? changesOf(args, []).map((change) =>
+        ? listChanges(args, []).map((change) =>
             change.field === 'starts_at' ? { ...change, value: row.data.starts_at } : change,
           )
         : []
@@ -161,7 +161,7 @@ function series(action: WriteAction): FactReader {
       added: row.data.added ?? 0,
       removed: row.data.removed ?? 0,
       changes:
-        action === 'updated' ? changesOf(args, ['from', 'until', 'weekly', 'skip']) : [],
+        action === 'updated' ? listChanges(args, ['from', 'until', 'weekly', 'skip']) : [],
     }
   }
 }
@@ -197,7 +197,7 @@ function isWriteToolName(name: string): name is WriteToolName {
   return Object.hasOwn(factReaders, name)
 }
 
-function factOf(write: Write) {
+function writeToFact(write: Write) {
   if (!isWriteToolName(write.name)) return null
   return factReaders[write.name]({
     args: isJsonObject(write.args) ? write.args : {},
@@ -281,14 +281,14 @@ export function groupFacts(facts: ReadonlyArray<ReceiptFact>): Array<ReceiptFact
  * The receipt for a run's writes, in the order they happened. Writes from
  * tools it does not know, or whose result it cannot read, leave no fact.
  */
-export function receiptOf(writes: ReadonlyArray<Write>): Array<ReceiptFact> {
-  return groupFacts(writes.flatMap((write) => factOf(write) ?? []))
+export function buildReceipt(writes: ReadonlyArray<Write>): Array<ReceiptFact> {
+  return groupFacts(writes.flatMap((write) => writeToFact(write) ?? []))
 }
 
 const receiptCarrier = z.object({ receipt: z.array(z.unknown()) })
 
 /** The facts a persisted execute_typescript output carries; malformed ones are dropped. */
-export function readReceipt(output: JsonValue | undefined): Array<ReceiptFact> {
+export function parseReceipt(output: JsonValue | undefined): Array<ReceiptFact> {
   const carrier = receiptCarrier.safeParse(output)
   if (!carrier.success) return []
   return carrier.data.receipt.flatMap((raw) => {

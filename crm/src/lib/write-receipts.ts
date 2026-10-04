@@ -272,7 +272,7 @@ function seriesLines(fact: SeriesFact): Array<ReceiptLine> {
   ]
 }
 
-function linesOf(fact: ReceiptFact): Array<ReceiptLine> {
+function factToLines(fact: ReceiptFact): Array<ReceiptLine> {
   switch (fact.entity) {
     case 'client':
     case 'service':
@@ -326,5 +326,5 @@ function linesOf(fact: ReceiptFact): Array<ReceiptLine> {
 
 /** The receipt under one agent turn, one line per fact plus a series' class counts. */
 export function receiptLines(facts: ReadonlyArray<ReceiptFact>): Array<ReceiptLine> {
-  return facts.flatMap(linesOf)
+  return facts.flatMap(factToLines)
 }
