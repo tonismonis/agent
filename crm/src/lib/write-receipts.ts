@@ -114,6 +114,27 @@ function participle(entity: Entity, action: WriteAction, plural: boolean) {
   return `${stem}${ending}${plural ? 's' : ''}`
 }
 
+/** An update that only set an appointment's status reads as what happened to it. */
+const statusHeadlines = new Map([
+  ['cancelled', ['Cita cancelada', 'citas canceladas']],
+  ['completed', ['Cita realizada', 'citas realizadas']],
+  ['no_show', ['Cita sin asistencia', 'citas sin asistencia']],
+  ['scheduled', ['Cita reagendada', 'citas reagendadas']],
+])
+
+function movedHeadline(changes: ReadonlyArray<FieldChange>, count: number) {
+  if (!changes.some((change) => change.field === 'starts_at')) return null
+  return count === 1 ? 'Cita movida' : `${count} citas movidas`
+}
+
+function statusHeadline(changes: ReadonlyArray<FieldChange>, count: number) {
+  const [only] = changes
+  if (changes.length !== 1 || only?.field !== 'status' || !isJsonString(only.value)) return null
+  const words = statusHeadlines.get(only.value)
+  if (!words) return null
+  return count === 1 ? words[0] : `${count} ${words[1]}`
+}
+
 /** `Cita agendada` for one record; `3 pagos` or `2 citas eliminadas` for several. */
 function headline(entity: Entity, action: WriteAction, count: number) {
   const noun = nouns[entity]
@@ -262,17 +283,35 @@ function linesOf(fact: ReceiptFact): Array<ReceiptLine> {
           value: joined([fact.subject, ...fact.changes.map(changeText)]),
         },
       ]
-    case 'appointment':
+    case 'appointment': {
+      if (fact.action === 'updated') {
+        const status = statusHeadline(fact.changes, fact.count)
+        const when =
+          fact.starts_at === null ? null : formatFieldValue('starts_at', fact.starts_at)
+        if (status) return [{ label: status, value: joined([fact.client, when]) }]
+        const moved = movedHeadline(fact.changes, fact.count)
+        const others = fact.changes.filter((change) => change.field !== 'starts_at')
+        return [
+          {
+            label: moved ?? headline(fact.entity, fact.action, fact.count),
+            value: joined([
+              fact.client,
+              moved === null ? null : when,
+              ...others.map(changeText),
+            ]),
+          },
+        ]
+      }
       return [
         {
           label: headline(fact.entity, fact.action, fact.count),
           value: joined([
             fact.client,
             fact.starts_at === null ? null : formatFieldValue('starts_at', fact.starts_at),
-            ...fact.changes.map(changeText),
           ]),
         },
       ]
+    }
     case 'payment':
       return [
         {

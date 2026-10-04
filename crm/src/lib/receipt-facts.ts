@@ -100,7 +100,13 @@ function appointment(action: WriteAction): FactReader {
   return ({ args, result }) => {
     const row = appointmentRow.safeParse(result)
     if (!row.success) return null
-    const changes = action === 'updated' ? changesOf(args, ['starts_at']) : []
+    // A move keeps the instant the result reports, not the wall time the args named.
+    const changes =
+      action === 'updated'
+        ? changesOf(args, []).map((change) =>
+            change.field === 'starts_at' ? { ...change, value: row.data.starts_at } : change,
+          )
+        : []
     return {
       entity: 'appointment',
       action,
@@ -199,9 +205,11 @@ function factOf(write: Write) {
   })
 }
 
+/** Updates group only when they set the same values: two moves stay two lines. */
 function groupKey(fact: ReceiptFact) {
   const who = 'subject' in fact ? fact.subject : fact.client
-  return JSON.stringify([fact.entity, fact.action, who])
+  const changes = fact.action === 'updated' && 'changes' in fact ? fact.changes : null
+  return JSON.stringify([fact.entity, fact.action, who, changes])
 }
 
 /** A later change to the same field replaces the earlier one in place. */
