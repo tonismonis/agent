@@ -12,6 +12,7 @@ export type ChatState = Pick<
   ChatViewProps,
   | 'messages'
   | 'callsByToolCall'
+  | 'writesByToolCall'
   | 'isLoading'
   | 'error'
   | 'queue'
@@ -74,6 +75,7 @@ function queued(text: string): QueuedMessage {
 }
 
 const idle = {
+  writesByToolCall: new Map(),
   ownerName: 'Tomás',
   isLoading: false,
   error: undefined,

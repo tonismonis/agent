@@ -10,7 +10,12 @@ import {
   isJsonString,
   type JsonValue,
 } from '#/lib/json'
-import type { FieldChange, ReceiptFact, WriteAction } from '#/lib/receipt-facts'
+import {
+  buildFactKey,
+  type FieldChange,
+  type ReceiptFact,
+  type WriteAction,
+} from '#/lib/receipt-facts'
 
 export type WorkCall = {
   /** Stable key for React and for pairing a call with its result. */
@@ -27,7 +32,8 @@ export type WorkCall = {
   durationMs?: number
 }
 
-export type ReceiptLine = { label: string; value: string }
+type LineText = { label: string; value: string }
+export type ReceiptLine = LineText & { key: string }
 
 const writeVerbs = ['create', 'update', 'softdelete', 'soft_delete', 'restore']
 
@@ -246,7 +252,7 @@ function seriesHeadline(fact: SeriesFact) {
   return headline('series', fact.action, 1)
 }
 
-function seriesLines(fact: SeriesFact): Array<ReceiptLine> {
+function seriesLines(fact: SeriesFact): Array<LineText> {
   const classes =
     fact.classes === null
       ? null
@@ -272,7 +278,7 @@ function seriesLines(fact: SeriesFact): Array<ReceiptLine> {
   ]
 }
 
-function factToLines(fact: ReceiptFact): Array<ReceiptLine> {
+function factToLines(fact: ReceiptFact): Array<LineText> {
   switch (fact.entity) {
     case 'client':
     case 'service':
@@ -324,7 +330,15 @@ function factToLines(fact: ReceiptFact): Array<ReceiptLine> {
   }
 }
 
-/** The receipt under one agent turn, one line per fact plus a series' class counts. */
+/**
+ * The receipt under one agent turn, one line per fact plus a series' class
+ * counts. A line keeps its key while its count grows, so it updates in place.
+ */
 export function receiptLines(facts: ReadonlyArray<ReceiptFact>): Array<ReceiptLine> {
-  return facts.flatMap(factToLines)
+  return facts.flatMap((fact) =>
+    factToLines(fact).map((line, index) => ({
+      ...line,
+      key: `${buildFactKey(fact)}:${index}`,
+    })),
+  )
 }

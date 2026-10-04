@@ -35,6 +35,17 @@
   --container-column: 816px;
   --breakpoint-margin: 86rem;
   --breakpoint-picker: 75rem;
+
+  /* A light passing over text that is still being written. */
+  --animate-shimmer: shimmer 1.8s linear infinite;
+  @keyframes shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: -100% 0;
+    }
+  }
 }
 
 /* The default. :root matches whatever paper is set, so this block comes first

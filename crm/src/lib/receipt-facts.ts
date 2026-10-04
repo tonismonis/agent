@@ -205,8 +205,11 @@ function writeToFact(write: Write) {
   })
 }
 
-/** Updates group only when they set the same values: two moves stay two lines. */
-function groupKey(fact: ReceiptFact) {
+/**
+ * A fact's identity within a receipt, also its key on screen. Updates share
+ * one only when they set the same values: two moves stay two lines.
+ */
+export function buildFactKey(fact: ReceiptFact) {
   const who = 'subject' in fact ? fact.subject : fact.client
   const changes = fact.action === 'updated' && 'changes' in fact ? fact.changes : null
   return JSON.stringify([fact.entity, fact.action, who, changes])
@@ -270,7 +273,7 @@ function merge(into: ReceiptFact, next: ReceiptFact): ReceiptFact {
 export function groupFacts(facts: ReadonlyArray<ReceiptFact>): Array<ReceiptFact> {
   const grouped = new Map<string, ReceiptFact>()
   for (const fact of facts) {
-    const key = groupKey(fact)
+    const key = buildFactKey(fact)
     const earlier = grouped.get(key)
     grouped.set(key, earlier ? merge(earlier, fact) : fact)
   }
