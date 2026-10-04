@@ -32,6 +32,7 @@ import {
   updateService,
   type CrmTool,
 } from '#/lib/tools.server'
+import { writeEventName } from '#/lib/receipt-facts'
 import { isWriteTool } from '#/lib/write-receipts'
 
 import type { z } from 'zod'
@@ -67,7 +68,7 @@ export function bindTool<
     description: tool.description,
     inputSchema: convertSchemaToJsonSchema(tool.inputSchema),
     outputSchema: convertSchemaToJsonSchema(tool.outputSchema),
-  }).server(async (input) => {
+  }).server(async (input, context) => {
     let result: TResult
     try {
       // SAFETY: execute parses its raw input itself and refuses anything else.
@@ -79,11 +80,14 @@ export function bindTool<
     }
     const json = toJson(result)
     const output = tool.outputSchema.safeParse(json)
-    if (output.success) return output.data
     // The write already committed: refusing now would tell the Owner it was
     // not saved, and a retry would save it twice.
-    console.error('tool output does not match its schema', tool.name, output.error)
-    return json
+    if (!output.success)
+      console.error('tool output does not match its schema', tool.name, output.error)
+    const saved = output.success ? output.data : json
+    if (write)
+      context?.emitCustomEvent(writeEventName, { name: tool.name, args: input, result: saved })
+    return saved
   })
 }
 

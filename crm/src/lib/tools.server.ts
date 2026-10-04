@@ -59,6 +59,7 @@ import {
   planSeries,
   type WeeklySlot,
 } from '#/lib/series'
+import type { WriteToolName } from '#/lib/receipt-facts'
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core'
 
 type AuditEntity =
@@ -346,7 +347,7 @@ function writeTool<
   TResult,
   TBefore = null,
 >(spec: {
-  name: string
+  name: WriteToolName
   entity: AuditEntity
   description: string
   guide: ToolGuide<z.input<TSchema>>
