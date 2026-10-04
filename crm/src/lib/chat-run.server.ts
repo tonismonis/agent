@@ -13,8 +13,9 @@ import {
   memoryStream,
   resolveResumeRunId,
   resumeServerSentEventsResponse,
+  toolDefinition,
 } from '@tanstack/ai'
-import { createCodeMode } from '@tanstack/ai-code-mode'
+import { createCodeMode, type createCodeModeTool } from '@tanstack/ai-code-mode'
 import { createNodeIsolateDriver } from '@tanstack/ai-isolate-node'
 import { openRouterText } from '@tanstack/ai-openrouter'
 import { reconstructChat, withPersistence } from '@tanstack/ai-persistence'
@@ -29,9 +30,17 @@ import {
 } from '#/lib/inference-config'
 import { buildAppPrompt } from '#/lib/system-prompt'
 import { readRefusal } from '#/lib/refusal'
+import {
+  receiptOf,
+  receiptSchema,
+  writeEvent,
+  writeEventName,
+  type Write,
+} from '#/lib/receipt-facts'
 import { runOwnerTool } from '#/lib/tools.server'
 
 import type { ChatMiddleware, StreamChunk, TokenUsage } from '@tanstack/ai'
+import type { ExecuteTypescriptOutput } from '@tanstack/ai-code-mode'
 import type { owners } from '#/db/schema'
 
 type ChatOwner = typeof owners.$inferSelect
@@ -177,6 +186,7 @@ export type Turn = {
 export type TurnDriver = (turn: Turn) => AsyncIterable<StreamChunk>
 
 type CodeModeTool = ReturnType<typeof createCodeMode>['tool']
+type ExecuteTypescriptTool = ReturnType<typeof createCodeModeTool>
 
 /**
  * An execution that ended on an uncaught refusal reports `{name: 'Refusal',
@@ -184,18 +194,43 @@ type CodeModeTool = ReturnType<typeof createCodeMode>['tool']
  * frames, and the model reads every character. Other failures, the model's own
  * TypeError included, pass through untouched.
  */
-export function withRefusalOutput(tool: CodeModeTool): CodeModeTool {
-  const execute = tool.execute
-  if (!execute) return tool
-  return {
-    ...tool,
-    execute: async (input, context) => {
-      const output = await execute(input, context)
-      const message = output.error?.message
-      if (output.success || !message || !readRefusal(message)) return output
-      return { ...output, error: { name: 'Refusal', message } }
-    },
-  }
+function withRefusalError(output: ExecuteTypescriptOutput): ExecuteTypescriptOutput {
+  const message = output.error?.message
+  if (output.success || !message || !readRefusal(message)) return output
+  return { ...output, error: { name: 'Refusal', message } }
+}
+
+/**
+ * execute_typescript as the model and the chat read it: refusals without a
+ * stack, plus `receipt`, the facts of what this execution's CRM writes saved.
+ * A failed execution carries one too, since each write commits on its own.
+ * The output schema names `receipt` because the engine parses every result
+ * with it, and zod drops keys it does not name.
+ */
+export function withRefusalAndReceipt(tool: CodeModeTool) {
+  // SAFETY: createCodeMode builds its tool with createCodeModeTool; its declared
+  // type only erases the zod schemas to SchemaInput.
+  const { execute, inputSchema, outputSchema } = tool as ExecuteTypescriptTool
+  if (!execute || !inputSchema || !outputSchema)
+    throw new Error('execute_typescript must be a server tool with schemas')
+  return toolDefinition({
+    name: tool.name,
+    description: tool.description,
+    inputSchema,
+    outputSchema: outputSchema.extend({ receipt: receiptSchema.optional() }),
+  }).server(async (input, context) => {
+    const writes: Array<Write> = []
+    const output = await execute(input, {
+      ...context,
+      emitCustomEvent: (name, value, options) => {
+        const write = name === writeEventName ? writeEvent.safeParse(value) : null
+        if (write?.success) writes.push(write.data)
+        context?.emitCustomEvent(name, value, options)
+      },
+    })
+    const receipt = receiptOf(writes)
+    return { ...withRefusalError(output), ...(receipt.length > 0 && { receipt }) }
+  })
 }
 
 /** The production driver: the Owner's CRM tools in code mode, on the model. */
@@ -227,7 +262,7 @@ export const modelTurn: TurnDriver = ({
       }),
       systemPrompt,
     ],
-    tools: [withRefusalOutput(tool)],
+    tools: [withRefusalAndReceipt(tool)],
     agentLoopStrategy: maxIterations(5),
     messages: params.messages,
     threadId: getDailyThreadId(now),

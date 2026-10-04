@@ -17,7 +17,7 @@ import {
   owners,
   services,
 } from '#/db/schema'
-import { withRefusalOutput } from './chat-run.server'
+import { withRefusalAndReceipt } from './chat-run.server'
 import { bindTool, chatTools, createChatTools } from './chat-tools.server'
 import { readRefusal } from './refusal'
 import {
@@ -140,7 +140,7 @@ function sandbox() {
     driver: createNodeIsolateDriver(),
     tools: createChatTools((operation) => runOwnerTool(ownerId, operation)),
   })
-  const wrapped = withRefusalOutput(tool)
+  const wrapped = withRefusalAndReceipt(tool)
   return (typescriptCode: string) => wrapped.execute!({ typescriptCode })
 }
 
