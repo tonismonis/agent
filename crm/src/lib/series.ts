@@ -9,7 +9,7 @@ import {
   addDays,
   describeLocalDate,
   localInstant,
-  weekdayOf,
+  getWeekday,
   weekdays,
   type Clock,
   type LocalDate,
@@ -34,7 +34,7 @@ function daysBetween(from: LocalDate, to: LocalDate) {
 }
 
 /** The instant span of one class, or null inside the spring gap. */
-export function occurrenceOf(
+export function buildOccurrence(
   date: LocalDate,
   time: Clock,
   minutes: number,
@@ -70,9 +70,9 @@ export function planSeries(
     if ('until' in end && date > end.until) break
     if ('count' in end && occurrences.length >= end.count) break
     if (daysBetween(from, date) >= MAX_SERIES_DAYS) throw refuse.askShorter()
-    const slot = weekly.find((each) => each.day === weekdayOf(date))
+    const slot = weekly.find((each) => each.day === getWeekday(date))
     if (slot && !skipped.has(date))
-      occurrences.push(occurrenceOf(date, slot.time, minutes))
+      occurrences.push(buildOccurrence(date, slot.time, minutes))
     if (occurrences.length > MAX_SERIES_CLASSES) throw refuse.askShorter()
   }
   const last = occurrences.at(-1)

@@ -5,7 +5,7 @@ import { aroundEach, beforeAll, beforeEach, describe, expect, test } from 'vites
 import { db, withOwnerTxn } from '#/db'
 import { chatTools } from './chat-tools.server'
 import { readRefusal } from './refusal'
-import { refusalOf } from '#/test/refusals'
+import { expectRefusal } from '#/test/refusals'
 import {
   appointmentSeries,
   appointmentSeriesDays,
@@ -139,7 +139,7 @@ test('code-mode bindings hand the model validated JSON', async () => {
     }),
   )
   expect(
-    await refusalOf(bindings.updateClient.execute({ id: 987_654_321 })),
+    await expectRefusal(bindings.updateClient.execute({ id: 987_654_321 })),
   ).toEqual(
     expect.objectContaining({ kind: 'not_found', entity: 'client', id: 987_654_321 }),
   )
@@ -174,7 +174,7 @@ test('tool call writes audit_log row', async () => {
 })
 
 test('failed tool call writes audit row with ok=false and the refusal', async () => {
-  const refusal = await refusalOf(updateClient.execute({ id: 987_654_321, name: 'X' }))
+  const refusal = await expectRefusal(updateClient.execute({ id: 987_654_321, name: 'X' }))
 
   const rows = await db.select().from(audit_log)
   expect(rows).toHaveLength(1)
@@ -193,7 +193,7 @@ test('failed tool call writes audit row with ok=false and the refusal', async ()
 
 test('invalid input is refused before anything runs, with no audit row', async () => {
   // @ts-expect-error exercising runtime validation
-  const refusal = await refusalOf(createClient.execute({ name: 7 }))
+  const refusal = await expectRefusal(createClient.execute({ name: 7 }))
 
   expect(refusal).toEqual(
     expect.objectContaining({
@@ -208,7 +208,7 @@ test('invalid input is refused before anything runs, with no audit row', async (
 
 test("a missing field the guide can ask for becomes the Owner's question", async () => {
   // @ts-expect-error exercising runtime validation
-  const refusal = await refusalOf(createClient.execute({}))
+  const refusal = await expectRefusal(createClient.execute({}))
 
   expect(refusal).toEqual({ kind: 'ask', say: '¿Cómo se llama?', needs: ['name'] })
   expect(await db.select().from(audit_log)).toEqual([])
@@ -241,7 +241,7 @@ test('owner cannot update another owner client via tools', async () => {
   )
 
   expect(
-    await refusalOf(updateClient.execute({ id: bobClient.id, name: 'Stolen' })),
+    await expectRefusal(updateClient.execute({ id: bobClient.id, name: 'Stolen' })),
   ).toEqual(expect.objectContaining({ kind: 'not_found', id: bobClient.id }))
   expect(
     await withOwnerTxn(ownerB, () => findClients.execute({})),
@@ -406,7 +406,7 @@ test('softDeleteClient rejects scheduled future appointments with details', asyn
     mode: 'online',
   })
 
-  expect(await refusalOf(softDeleteClient.execute({ id: client.id }))).toEqual({
+  expect(await expectRefusal(softDeleteClient.execute({ id: client.id }))).toEqual({
     kind: 'blocked',
     say: 'Acme tiene 2 citas agendadas desde hoy, la primera el miércoles 1 de octubre a las 17:00. Hay que cancelarlas o borrarlas antes de borrar a Acme.',
     appointments: [
@@ -528,7 +528,7 @@ test('restoreAppointment rejects a rebooked slot with conflict details', async (
     mode: 'online',
   })
 
-  expect(await refusalOf(restoreAppointment.execute({ id: deleted.id }))).toEqual(
+  expect(await expectRefusal(restoreAppointment.execute({ id: deleted.id }))).toEqual(
     expect.objectContaining({
       kind: 'conflict',
       say: 'No pude restaurar la cita. El sábado 1 de agosto a las 11:00 ya tienes a Pedro, de 11:30 a 12:30.',
@@ -654,7 +654,7 @@ test('createAppointment throws when duration unresolvable', async () => {
   })
 
   expect(
-    await refusalOf(
+    await expectRefusal(
       createAppointment.execute({
         client_id: client.id,
         service_id: service.id,
@@ -689,7 +689,7 @@ test('createAppointment rejects overlap with conflicting client name in message'
   })
 
   expect(
-    await refusalOf(
+    await expectRefusal(
       createAppointment.execute({
         client_id: pedro.id,
         service_id: service.id,
@@ -935,7 +935,7 @@ test('createAppointment reads an offsetless time as Santiago clock time', async 
 
   expect(booked.starts_at).toEqual(new Date('2026-10-01T20:00:00.000Z'))
   expect(
-    await refusalOf(
+    await expectRefusal(
       createAppointment.execute({
         client_id: client.id,
         service_id: service.id,
@@ -1162,7 +1162,7 @@ test('createAppointment throws clean error for nonexistent or deleted service', 
   const rosa = await createClient.execute({ name: 'Rosa' })
 
   expect(
-    await refusalOf(
+    await expectRefusal(
       createAppointment.execute({
         client_id: rosa.id,
         service_id: 999999,
@@ -1182,7 +1182,7 @@ test('createAppointment throws clean error for nonexistent or deleted service', 
   await softDeleteService.execute({ id: deleted.id })
 
   expect(
-    await refusalOf(
+    await expectRefusal(
       createAppointment.execute({
         client_id: rosa.id,
         service_id: deleted.id,
@@ -1195,7 +1195,7 @@ test('createAppointment throws clean error for nonexistent or deleted service', 
 
 test('updateAppointment throws clean error for nonexistent appointment', async () => {
   expect(
-    await refusalOf(
+    await expectRefusal(
       updateAppointment.execute({
         id: 999999,
         starts_at: '2026-08-01T15:00:00.000Z',
@@ -1356,20 +1356,20 @@ test('every chat tool explains itself to the Owner in Spanish', () => {
 })
 
 test('a write naming a missing id refuses as not found, for every entity', async () => {
-  expect(await refusalOf(softDeleteService.execute({ id: 999_999 }))).toEqual(
+  expect(await expectRefusal(softDeleteService.execute({ id: 999_999 }))).toEqual(
     expect.objectContaining({ kind: 'not_found', entity: 'service', id: 999_999 }),
   )
-  expect(await refusalOf(restorePayment.execute({ id: 999_999 }))).toEqual(
+  expect(await expectRefusal(restorePayment.execute({ id: 999_999 }))).toEqual(
     expect.objectContaining({ kind: 'not_found', entity: 'payment', id: 999_999 }),
   )
   expect(
-    await refusalOf(updatePayment.execute({ id: 999_999, amount: 5000 })),
+    await expectRefusal(updatePayment.execute({ id: 999_999, amount: 5000 })),
   ).toEqual(expect.objectContaining({ kind: 'not_found', entity: 'payment' }))
 })
 
 test("missing service fields become the Owner's questions, in field order", async () => {
   // @ts-expect-error exercising runtime validation
-  const refusal = await refusalOf(createService.execute({ name: 'Piano' }))
+  const refusal = await expectRefusal(createService.execute({ name: 'Piano' }))
 
   expect(refusal).toEqual({
     kind: 'ask',
@@ -1433,7 +1433,7 @@ describe('series', () => {
   test('without an end the Owner is asked, and nothing is written', async () => {
     const { client, service } = await pianoFor('Pedro')
 
-    const refusal = await refusalOf(
+    const refusal = await expectRefusal(
       // @ts-expect-error exercising runtime validation
       createAppointmentSeries.execute({
         client_id: client.id,
@@ -1455,7 +1455,7 @@ describe('series', () => {
   test("a malformed time is the model's to fix, silently", async () => {
     const { client, service } = await pianoFor('Pedro')
 
-    const refusal = await refusalOf(
+    const refusal = await expectRefusal(
       createAppointmentSeries.execute({
         client_id: client.id,
         service_id: service.id,
@@ -1487,7 +1487,7 @@ describe('series', () => {
     })
 
     expect(
-      await refusalOf(
+      await expectRefusal(
         updateAppointmentSeries.execute({
           id: series.id,
           weekly: [{ day: 'wednesday', time: '17:00' }],
@@ -1519,7 +1519,7 @@ describe('series', () => {
       mode: 'online',
     })
 
-    const refusal = await refusalOf(
+    const refusal = await expectRefusal(
       updateAppointmentSeries.execute({
         id: series.id,
         from: '2036-10-07',
@@ -1574,7 +1574,7 @@ describe('series', () => {
       expect.objectContaining({ series_id: series.id, series_date: '2036-10-07' }),
     )
 
-    const again = await refusalOf(
+    const again = await expectRefusal(
       createAppointment.execute({
         client_id: client.id,
         service_id: service.id,
@@ -1591,7 +1591,7 @@ describe('series', () => {
       }),
     )
     expect(
-      await refusalOf(
+      await expectRefusal(
         createAppointment.execute({
           client_id: client.id,
           service_id: service.id,
@@ -1623,7 +1623,7 @@ describe('series', () => {
       mode: 'online',
     })
 
-    expect(await refusalOf(softDeleteClient.execute({ id: client.id }))).toEqual(
+    expect(await expectRefusal(softDeleteClient.execute({ id: client.id }))).toEqual(
       expect.objectContaining({
         kind: 'blocked',
         say: 'Ana tiene 4 citas agendadas desde hoy, la primera el martes 30 de septiembre a las 10:00, entre ellas sus clases de todos los martes a las 10:00 y los jueves a las 10:00. Hay que cancelarlas o borrarlas antes de borrar a Ana.',
@@ -1679,7 +1679,7 @@ describe('series', () => {
       mode: 'online',
     })
 
-    expect(await refusalOf(restoreAppointmentSeries.execute({ id: series.id }))).toEqual(
+    expect(await expectRefusal(restoreAppointmentSeries.execute({ id: series.id }))).toEqual(
       expect.objectContaining({
         kind: 'conflict',
         say: 'No restauré las clases porque una fecha choca:\n- martes 7 de octubre, 17:00: ya tienes a Rosa (17:30–18:30)',

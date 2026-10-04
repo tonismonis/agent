@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import { readRefusal } from './refusal'
-import { clock, localDate, santiagoClockOf, type Weekday } from './santiago-time'
+import { clock, localDate, toSantiagoClock, type Weekday } from './santiago-time'
 import { describeRule, planSeries, type WeeklySlot } from './series'
 
 const on = (value: string) => localDate.parse(value)
@@ -21,7 +21,7 @@ describe('planSeries', () => {
     )
 
     expect(plan.occurrences).toHaveLength(14)
-    expect(plan.occurrences.map((each) => santiagoClockOf(each.span!.starts_at))).toEqual(
+    expect(plan.occurrences.map((each) => toSantiagoClock(each.span!.starts_at))).toEqual(
       Array(14).fill('17:00'),
     )
     expect(plan.ends_on).toBe('2026-12-31')

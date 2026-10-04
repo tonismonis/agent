@@ -15,8 +15,8 @@ import {
   clock,
   describeLocalDay,
   localDate,
-  santiagoClockOf,
-  santiagoDateOf,
+  toSantiagoClock,
+  toSantiagoDate,
   describeSantiagoSpan,
   describeSantiagoTime,
   type Clock,
@@ -207,8 +207,8 @@ function placeholders(found: ProblemFound) {
   ])
   if (found.problem === 'taken') {
     values.set('client', found.with.client)
-    values.set('a', santiagoClockOf(found.with.starts_at))
-    values.set('b', santiagoClockOf(found.with.ends_at))
+    values.set('a', toSantiagoClock(found.with.starts_at))
+    values.set('b', toSantiagoClock(found.with.ends_at))
   }
   if (found.problem === 'overlaps_series')
     values.set('other_time', found.other_time)
@@ -327,8 +327,8 @@ export const refuse = {
     const values = new Map<string, string | number>([
       ['client', client],
       ['n', upcoming.length],
-      ['day', first ? describeLocalDay(santiagoDateOf(first.starts_at)) : ''],
-      ['time', first ? santiagoClockOf(first.starts_at) : ''],
+      ['day', first ? describeLocalDay(toSantiagoDate(first.starts_at)) : ''],
+      ['time', first ? toSantiagoClock(first.starts_at) : ''],
       [
         'series',
         rules.length
