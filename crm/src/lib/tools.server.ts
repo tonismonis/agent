@@ -507,6 +507,7 @@ const appointmentRecord = z.object({
   id: z.number().int(),
   owner_id: z.string(),
   client_id: z.number().int(),
+  client_name: z.string(),
   service_id: z.number().int(),
   starts_at: timestamp,
   ends_at: timestamp,
@@ -532,6 +533,7 @@ const paymentRecord = z.object({
   id: z.number().int(),
   owner_id: z.string(),
   client_id: z.number().int(),
+  client_name: z.string(),
   appointment_id: z
     .number()
     .int()
@@ -905,6 +907,27 @@ async function findClient({ id }: { id: number }) {
   return client
 }
 
+/** A row as a tool returns it: with its client's name, so a reader needs no lookup. */
+async function withClientName<T extends { client_id: number }>(row: T | undefined) {
+  if (!row) return undefined
+  const [client] = await db
+    .select({ name: clients.name })
+    .from(clients)
+    .where(eq(clients.id, row.client_id))
+  if (!client) throw new Error(`client ${row.client_id} not found`)
+  return { ...row, client_name: client.name }
+}
+
+const clientOfAppointment = and(
+  eq(clients.id, appointments.client_id),
+  eq(clients.owner_id, appointments.owner_id),
+)
+
+const clientOfPayment = and(
+  eq(clients.id, payments.client_id),
+  eq(clients.owner_id, payments.owner_id),
+)
+
 async function findAppointment({ id }: { id: number }) {
   const [appointment] = await db
     .select()
@@ -935,8 +958,9 @@ export const findAppointments = readTool({
   run: async ({ client_id, from, to, status }) => {
     const { start, end } = toRange(from, to)
     const rows = await db
-      .select()
+      .select({ appointment: appointments, client_name: clients.name })
       .from(appointments)
+      .innerJoin(clients, clientOfAppointment)
       .where(
         and(
           isNull(appointments.deleted_at),
@@ -947,10 +971,11 @@ export const findAppointments = readTool({
         ),
       )
       .orderBy(appointments.starts_at)
-    return rows.map((row) => ({
-      ...row,
-      starts_local: describeSantiagoTime(row.starts_at),
-      ends_local: describeSantiagoTime(row.ends_at),
+    return rows.map(({ appointment, client_name }) => ({
+      ...appointment,
+      client_name,
+      starts_local: describeSantiagoTime(appointment.starts_at),
+      ends_local: describeSantiagoTime(appointment.ends_at),
     }))
   },
 })
@@ -990,7 +1015,7 @@ export const updateAppointment = writeTool({
         .set(set)
         .where(eq(appointments.id, id))
         .returning()
-      return appointment
+      return withClientName(appointment)
     }
     const moving = starts_at !== undefined || duration_minutes !== undefined
     if (!moving && fields.status !== 'scheduled') return update()
@@ -1041,7 +1066,7 @@ export const softDeleteAppointment = writeTool({
       .set({ deleted_at: sql`now()` })
       .where(eq(appointments.id, id))
       .returning()
-    return appointment
+    return withClientName(appointment)
   },
 })
 
@@ -1077,7 +1102,7 @@ export const restoreAppointment = writeTool({
           .set({ deleted_at: null })
           .where(eq(appointments.id, id))
           .returning()
-        return appointment
+        return withClientName(appointment)
       },
       { ignore: [id] },
     )
@@ -1374,7 +1399,7 @@ export const createAppointment = writeTool({
             series_date: member?.date,
           })
           .returning()
-        return appointment
+        return withClientName(appointment)
       },
     )
   },
@@ -1912,7 +1937,9 @@ export const softDeleteAppointmentSeries = writeTool({
     wont: 'No borra clases pasadas, realizadas ni pagadas.',
   },
   input: seriesIdInput,
-  output: seriesRecord,
+  output: seriesRecord.extend({
+    removed: z.number().int().describe('Future classes the deletion removed'),
+  }),
   before: ({ id }) => readSeries(id),
   run: async ({ id }) => {
     const [series] = await db
@@ -1921,7 +1948,7 @@ export const softDeleteAppointmentSeries = writeTool({
       .where(and(eq(appointmentSeries.id, id), isNull(appointmentSeries.deleted_at)))
       .returning()
     if (!series) return undefined
-    await db
+    const removed = await db
       .update(appointments)
       .set({ deleted_at: sql`now()` })
       .where(
@@ -1936,7 +1963,9 @@ export const softDeleteAppointmentSeries = writeTool({
           )`,
         ),
       )
-    return readSeries(id)
+      .returning({ id: appointments.id })
+    const record = await readSeries(id)
+    return record && { ...record, removed: removed.length }
   },
 })
 
@@ -2054,7 +2083,7 @@ export const createPayment = writeTool({
       .insert(payments)
       .values({ ...rest, paid_at: paid_at ? startOf(paid_at) : new Date() })
       .returning()
-    return payment
+    return withClientName(payment)
   },
 })
 
@@ -2072,9 +2101,10 @@ export const findPayments = readTool({
   output: z.array(paymentRecord),
   run: async ({ client_id, from, to }) => {
     const { start, end } = toRange(from, to)
-    return db
-      .select()
+    const rows = await db
+      .select({ payment: payments, client_name: clients.name })
       .from(payments)
+      .innerJoin(clients, clientOfPayment)
       .where(
         and(
           isNull(payments.deleted_at),
@@ -2083,6 +2113,7 @@ export const findPayments = readTool({
           end ? lt(payments.paid_at, end) : undefined,
         ),
       )
+    return rows.map(({ payment, client_name }) => ({ ...payment, client_name }))
   },
 })
 
@@ -2113,7 +2144,7 @@ export const updatePayment = writeTool({
       .set(set)
       .where(eq(payments.id, id))
       .returning()
-    return payment
+    return withClientName(payment)
   },
 })
 
@@ -2135,7 +2166,7 @@ export const softDeletePayment = writeTool({
       .set({ deleted_at: sql`now()` })
       .where(eq(payments.id, id))
       .returning()
-    return payment
+    return withClientName(payment)
   },
 })
 
@@ -2155,6 +2186,6 @@ export const restorePayment = writeTool({
       .set({ deleted_at: null })
       .where(eq(payments.id, id))
       .returning()
-    return payment
+    return withClientName(payment)
   },
 })
